@@ -12,16 +12,18 @@ if (!GEMINI_API_KEY) {
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
+// Helper: Delay execution
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 /**
- * Extracts data from DACTE/CTE using Gemini Flash
+ * Extracts data from DACTE/CTE using Gemini Flash with Retry Logic
  */
 export const extractDataFromImage = async (base64Image: string): Promise<ExtractedData> => {
-  try {
-    if (!GEMINI_API_KEY) {
-      throw new Error("Chave de API não configurada no sistema (API_KEY missing).");
-    }
+  if (!GEMINI_API_KEY) {
+    throw new Error("Chave de API não configurada no sistema (API_KEY missing).");
+  }
 
-    const prompt = `Analise este documento de transporte (DACTE, CTE) com EXTREMA ATENÇÃO AOS DETALHES. O documento pode ser uma digitalização antiga ou de baixa qualidade.
+  const prompt = `Analise este documento de transporte (DACTE, CTE) com EXTREMA ATENÇÃO AOS DETALHES. O documento pode ser uma digitalização antiga ou de baixa qualidade.
     
     INSTRUÇÕES CRÍTICAS DE EXTRAÇÃO:
 
@@ -43,42 +45,78 @@ export const extractDataFromImage = async (base64Image: string): Promise<Extract
 
     Retorne JSON estrito.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: base64Image
-            }
-          },
-          { text: prompt }
-        ]
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            numeroDoc: { type: Type.STRING },
-            dataEmissao: { type: Type.STRING },
-            serie: { type: Type.STRING }
-          },
-          required: ["numeroDoc", "dataEmissao", "serie"]
+  let attempt = 0;
+  const maxRetries = 4; // Increased retries for safety
+
+  while (attempt < maxRetries) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType: "image/jpeg",
+                data: base64Image
+              }
+            },
+            { text: prompt }
+          ]
+        },
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              numeroDoc: { type: Type.STRING },
+              dataEmissao: { type: Type.STRING },
+              serie: { type: Type.STRING }
+            },
+            required: ["numeroDoc", "dataEmissao", "serie"]
+          }
         }
+      });
+
+      const text = response.text;
+      if (!text) throw new Error("No response from AI");
+
+      return JSON.parse(text) as ExtractedData;
+
+    } catch (error: any) {
+      // Robust Error Parsing: Convert everything to string to catch nested JSON errors
+      const errorStr = JSON.stringify(error);
+      
+      const isQuotaError = 
+        errorStr.includes("429") || 
+        errorStr.includes("RESOURCE_EXHAUSTED") || 
+        errorStr.includes("quota") ||
+        error?.status === 429 ||
+        error?.error?.code === 429;
+
+      const isServerOverload = 
+        errorStr.includes("503") || 
+        error?.status === 503 ||
+        error?.error?.code === 503;
+
+      if ((isQuotaError || isServerOverload) && attempt < maxRetries - 1) {
+        attempt++;
+        // Aggressive Backoff: 4s, 8s, 16s... gives the quota bucket time to refill
+        const waitTime = Math.pow(2, attempt) * 2000;
+        console.warn(`[AI] Erro de Cota/Servidor (${isQuotaError ? '429' : '503'}). Retentando em ${waitTime/1000}s... (Tentativa ${attempt}/${maxRetries})`);
+        await delay(waitTime);
+        continue;
       }
-    });
 
-    const text = response.text;
-    if (!text) throw new Error("No response from AI");
-
-    return JSON.parse(text) as ExtractedData;
-
-  } catch (error) {
-    console.error("Gemini Extraction Error:", error);
-    throw new Error("Falha ao processar imagem com IA. Tente novamente.");
+      console.error("Gemini Extraction Fatal Error:", error);
+      
+      if (isQuotaError) {
+        throw new Error("Sistema de IA sobrecarregado (Cota Excedida). Aguarde alguns segundos e tente novamente.");
+      }
+      throw new Error("Falha ao processar imagem com IA. Verifique a qualidade da imagem.");
+    }
   }
+
+  throw new Error("Falha de conexão com IA após múltiplas tentativas.");
 };
 
 /**
@@ -107,11 +145,10 @@ export const uploadToDrive = async (payload: UploadPayload): Promise<boolean> =>
  */
 export const searchDocument = async (docNumber: string): Promise<SearchResult> => {
   try {
-    // FORCE NO CACHE with timestamp
     const cacheBuster = Date.now();
     const url = `${APPS_SCRIPT_URL}?q=${encodeURIComponent(docNumber.trim())}&_t=${cacheBuster}`;
     
-    console.log(`[API] Searching: ${docNumber} -> ${url}`);
+    console.log(`[API] Searching: ${docNumber}`);
 
     const response = await fetch(url);
     
@@ -120,27 +157,31 @@ export const searchDocument = async (docNumber: string): Promise<SearchResult> =
     }
     
     const backendData = await response.json();
-    console.log("[API] Response:", backendData);
-
-    // Normalize images: Backend might return 'url_preview' (legacy) or 'images' (array)
-    // We prioritize 'images' array if it exists
-    let images: string[] = [];
     
-    if (Array.isArray(backendData.images) && backendData.images.length > 0) {
-      images = backendData.images;
-    } else if (backendData.url_preview) {
-      images = [backendData.url_preview];
-    }
+    let images: string[] = [];
+    const extractImages = (data: any) => {
+        const potentialKeys = ['images', 'imagem', 'url_preview', 'link', 'url', 'arquivo', 'file'];
+        for (const key of potentialKeys) {
+            const val = data[key] || data[key.toUpperCase()] || data[key.charAt(0).toUpperCase() + key.slice(1)];
+            if (val) {
+                if (Array.isArray(val)) return val;
+                if (typeof val === 'string' && val.includes('http')) return [val];
+            }
+        }
+        return [];
+    };
+
+    images = extractImages(backendData);
 
     return {
-        found: backendData.encontrado === true,
+        found: backendData.encontrado === true || images.length > 0,
         message: backendData.mensagem || (backendData.encontrado ? "Documento localizado." : "Não encontrado."),
         images: images,
         url_drive: backendData.url_drive,
         docInfo: backendData.encontrado ? {
             numero: backendData.nome || docNumber,
             serie: backendData.serie || 'N/A',
-            data: backendData.data // Optional, in case backend sends it
+            data: backendData.data
         } : undefined
     };
 
@@ -167,7 +208,6 @@ export const getSearchSuggestions = async (query: string): Promise<SearchSuggest
 
     const data = await response.json();
     
-    // Expecting backend to return { suggestions: [{numero, serie}, ...] }
     if (data.suggestions && Array.isArray(data.suggestions)) {
       return data.suggestions.map((item: any) => ({
         numero: item.numero,
@@ -178,8 +218,6 @@ export const getSearchSuggestions = async (query: string): Promise<SearchSuggest
     
     return [];
   } catch (error) {
-    // Silent fail for suggestions
-    console.warn("Suggestion Error", error);
     return [];
   }
 };

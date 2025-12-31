@@ -43,7 +43,8 @@ export interface SearchSuggestion {
 export type AppView = 'upload' | 'search' | 'settings';
 
 // BATCH UPLOAD SPECIFIC TYPES
-export type BatchItemStatus = 'processing_image' | 'analyzing_ai' | 'ready' | 'queued' | 'uploading' | 'success' | 'error';
+// Added 'pending_ai' to allow queueing items after image processing but before AI analysis
+export type BatchItemStatus = 'processing_image' | 'pending_ai' | 'analyzing_ai' | 'ready' | 'queued' | 'uploading' | 'success' | 'error';
 
 export interface BatchItem {
   id: string;
