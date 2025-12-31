@@ -5,6 +5,11 @@ import { ExtractedData, SearchResult, UploadPayload } from "../../types";
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzzpMajuhVe1zy8J4u66y49kH3A0IrlC-v5OaJkDmgGZxvC_6B9QVohweQnqPVz4MyT/exec";
 const GEMINI_API_KEY = process.env.API_KEY || "";
 
+// Check configuration immediately
+if (!GEMINI_API_KEY) {
+  console.error("CONFIGURATION ERROR: API_KEY is missing. AI features will not work.");
+}
+
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 /**
@@ -12,6 +17,10 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
  */
 export const extractDataFromImage = async (base64Image: string): Promise<ExtractedData> => {
   try {
+    if (!GEMINI_API_KEY) {
+      throw new Error("Chave de API não configurada no sistema (API_KEY missing).");
+    }
+
     const prompt = `Analise este documento DACTE/CTE. Extraia os seguintes campos baseados em sua localização visual típica:
 
     numeroDoc (Caixa Vermelha): Localizado no topo, centro-direita, abaixo do rótulo 'NÚMERO'. Exemplo na imagem: '000.001.467'. Você deve extrair APENAS os dígitos significativos, removendo zeros à esquerda e pontos. O resultado deve ser '1467'.
