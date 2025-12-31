@@ -25,8 +25,8 @@ export interface UploadPayload {
 export interface SearchResult {
   found: boolean;
   message?: string;
-  url_preview?: string;
-  url_drive?: string;
+  images?: string[]; // Array of image URLs for multi-page/duplicate results
+  url_drive?: string; // Folder link or fallback link
   docInfo?: {
     numero: string;
     serie: string;
@@ -34,4 +34,24 @@ export interface SearchResult {
   }
 }
 
+export interface SearchSuggestion {
+  numero: string;
+  serie: string;
+  label: string; // "CTE 12345 (Série 1)"
+}
+
 export type AppView = 'upload' | 'search' | 'settings';
+
+// BATCH UPLOAD SPECIFIC TYPES
+export type BatchItemStatus = 'processing_image' | 'analyzing_ai' | 'ready' | 'queued' | 'uploading' | 'success' | 'error';
+
+export interface BatchItem {
+  id: string;
+  file: File;
+  previewUrl?: string;
+  base64?: string;
+  data: ExtractedData;
+  status: BatchItemStatus;
+  errorMessage?: string;
+  uploadProgress?: number;
+}

@@ -6,6 +6,7 @@ import { BatchItem, ExtractedData } from '../../types';
 import { FileCard } from './FileCard';
 import { ImageZoomModal } from './ImageZoomModal';
 import { Button } from '../ui/Button';
+import { convertPdfToJpeg } from '../../utils/pdfConverter';
 
 const MAX_BATCH_SIZE = 10;
 const CONCURRENCY_LIMIT = 2;
@@ -14,6 +15,7 @@ export const BatchManager: React.FC = () => {
   const [items, setItems] = useState<BatchItem[]>([]);
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
   const [zoomUrl, setZoomUrl] = useState<string | null>(null);
+  const [isConverting, setIsConverting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Stats
@@ -33,20 +35,47 @@ export const BatchManager: React.FC = () => {
       return;
     }
 
-    const newItems: BatchItem[] = filesArray.map(file => ({
-      id: crypto.randomUUID(),
-      file,
-      data: { numeroDoc: '', serie: '', dataEmissao: '' },
-      status: 'processing_image'
-    }));
+    setIsConverting(true);
 
-    setItems(prev => [...prev, ...newItems]);
+    // Pre-process: Convert PDFs to Images
+    const processedFiles: File[] = [];
     
-    // Reset input
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    try {
+      const conversionPromises = filesArray.map(async (file) => {
+        if (file.type === 'application/pdf') {
+          try {
+            return await convertPdfToJpeg(file);
+          } catch (err) {
+            console.error(`Erro ao converter PDF ${file.name}:`, err);
+            // If conversion fails, we return the original file to let it fail gracefully downstream 
+            // or filter it out. Returning null would be better but keeping simple for now.
+            return file; 
+          }
+        }
+        return file;
+      });
 
-    // Trigger Processing for new items
-    processNewItems(newItems);
+      const convertedFiles = await Promise.all(conversionPromises);
+
+      const newItems: BatchItem[] = convertedFiles.map(file => ({
+        id: crypto.randomUUID(),
+        file,
+        data: { numeroDoc: '', serie: '', dataEmissao: '' },
+        status: 'processing_image'
+      }));
+
+      setItems(prev => [...prev, ...newItems]);
+      
+      // Reset input
+      if (fileInputRef.current) fileInputRef.current.value = '';
+
+      // Trigger Processing for new items
+      processNewItems(newItems);
+    } catch (error) {
+      console.error("Erro no processamento inicial de arquivos:", error);
+    } finally {
+      setIsConverting(false);
+    }
   };
 
   // 2. Process Images (Resize -> AI)
@@ -72,7 +101,7 @@ export const BatchManager: React.FC = () => {
         setItems(prev => prev.map(i => i.id === item.id ? { 
             ...i, 
             status: 'error', 
-            errorMessage: 'Erro ao processar imagem' 
+            errorMessage: item.file.type === 'application/pdf' ? 'Falha converter PDF' : 'Erro ao processar imagem' 
         } : i));
       }
     }
@@ -173,13 +202,14 @@ export const BatchManager: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full max-w-2xl mx-auto p-4 space-y-6 pb-24">
+    <div className="flex flex-col h-full max-w-2xl mx-auto p-4 space-y-6">
       {/* Header & Stats */}
       <div className="flex justify-between items-end">
          <div>
             <h1 className="text-2xl font-bold text-brand-primary dark:text-white">Lote de Upload</h1>
             <p className="text-sm text-gray-500">
                {items.length === 0 ? 'Adicione até 10 documentos' : `${items.length} documento(s) na lista`}
+               {isConverting && <span className="ml-2 text-brand-primary animate-pulse">(Convertendo PDF...)</span>}
             </p>
          </div>
          {items.length > 0 && (
@@ -193,14 +223,18 @@ export const BatchManager: React.FC = () => {
       {/* Empty State */}
       {items.length === 0 && (
         <div 
-            onClick={() => fileInputRef.current?.click()}
-            className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-2xl bg-gray-50 dark:bg-brand-dark/20 min-h-[300px] cursor-pointer hover:bg-gray-100 transition-colors"
+            onClick={() => !isConverting && fileInputRef.current?.click()}
+            className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-2xl bg-gray-50 dark:bg-brand-dark/20 min-h-[300px] transition-colors ${isConverting ? 'opacity-50 cursor-wait' : 'cursor-pointer hover:bg-gray-100'}`}
         >
             <div className="bg-brand-primary/10 p-6 rounded-full mb-4">
-                <UploadCloud className="w-12 h-12 text-brand-primary" />
+                <UploadCloud className={`w-12 h-12 text-brand-primary ${isConverting ? 'animate-bounce' : ''}`} />
             </div>
-            <p className="text-lg font-medium text-gray-600 dark:text-gray-300">Toque para selecionar arquivos</p>
-            <p className="text-sm text-gray-400 mt-2">Máximo 10 por vez</p>
+            <p className="text-lg font-medium text-gray-600 dark:text-gray-300">
+                {isConverting ? 'Processando PDFs...' : 'Toque para selecionar arquivos'}
+            </p>
+            <p className="text-sm text-gray-400 mt-2">
+                {isConverting ? 'Aguarde um momento' : 'Imagens (JPG/PNG) ou PDFs'}
+            </p>
         </div>
       )}
 
@@ -216,6 +250,9 @@ export const BatchManager: React.FC = () => {
                 onZoom={setZoomUrl}
             />
          ))}
+         
+         {/* SPACER ELEMENT FOR SCROLLING - Increased to h-80 (20rem/320px) */}
+         <div className="h-80 w-full shrink-0" aria-hidden="true" />
       </div>
 
       {/* Actions Footer */}
@@ -223,14 +260,18 @@ export const BatchManager: React.FC = () => {
          <input 
             type="file" 
             multiple 
-            accept="image/*" 
+            accept="image/*,application/pdf" 
             ref={fileInputRef} 
             onChange={handleFileSelect} 
             className="hidden" 
          />
          
          {items.length < MAX_BATCH_SIZE && !isProcessingQueue && (
-             <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+             <Button 
+                variant="outline" 
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isConverting}
+            >
                 <Plus className="mr-2" size={20} /> Adicionar
              </Button>
          )}
@@ -240,7 +281,7 @@ export const BatchManager: React.FC = () => {
                 variant="primary" 
                 onClick={startBatchUpload} 
                 isLoading={isProcessingQueue}
-                disabled={isProcessingQueue || items.filter(i => i.status === 'ready' || i.status === 'error').length === 0}
+                disabled={isProcessingQueue || isConverting || items.filter(i => i.status === 'ready' || i.status === 'error').length === 0}
                 className="flex-1 max-w-[200px]"
              >
                 <UploadCloud className="mr-2" size={20} />

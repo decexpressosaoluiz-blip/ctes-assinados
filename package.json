@@ -15,7 +15,8 @@
     "framer-motion": "^12.23.26",
     "lucide-react": "^0.562.0",
     "@vitejs/plugin-react": "^5.1.2",
-    "vite": "^7.3.0"
+    "vite": "^7.3.0",
+    "pdfjs-dist": "4.0.379"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

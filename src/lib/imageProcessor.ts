@@ -30,12 +30,13 @@ export const processImage = async (file: File): Promise<ProcessedImage> => {
         // Draw image
         ctx.drawImage(img, 0, 0, width, height);
 
-        // 2. Image Manipulation (Grayscale + Contrast)
+        // 2. Image Manipulation (Grayscale + Moderate Contrast)
         const imageData = ctx.getImageData(0, 0, width, height);
         const data = imageData.data;
 
-        // Contrast factor (1.2 to 1.5 usually works well for documents)
-        const contrast = 1.3; 
+        // Reduced contrast factor (1.1 instead of 1.3) to prevent lighter digits 
+        // or digits near borders from being washed out into white/black extremes.
+        const contrast = 1.1; 
         const intercept = 128 * (1 - contrast);
 
         for (let i = 0; i < data.length; i += 4) {

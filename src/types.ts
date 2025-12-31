@@ -25,13 +25,19 @@ export interface UploadPayload {
 export interface SearchResult {
   found: boolean;
   message?: string;
-  url_preview?: string;
-  url_drive?: string;
+  images?: string[]; // Array of image URLs for multi-page/duplicate results
+  url_drive?: string; // Folder link or fallback link
   docInfo?: {
     numero: string;
     serie: string;
     data?: string;
   }
+}
+
+export interface SearchSuggestion {
+  numero: string;
+  serie: string;
+  label: string; // "CTE 12345 (Série 1)"
 }
 
 export type AppView = 'upload' | 'search' | 'settings';
