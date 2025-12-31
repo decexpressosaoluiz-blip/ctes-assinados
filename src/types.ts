@@ -49,8 +49,9 @@ export type BatchItemStatus = 'processing_image' | 'pending_ai' | 'analyzing_ai'
 export interface BatchItem {
   id: string;
   file: File;
-  previewUrl?: string;
+  previewUrl?: string; // If undefined, system will try to generate it (for PDFs)
   base64?: string;
+  rotation?: number; // 0, 90, 180, 270
   data: ExtractedData;
   status: BatchItemStatus;
   errorMessage?: string;

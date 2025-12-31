@@ -16,10 +16,48 @@ export const BatchManager: React.FC = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [currentIdx, setCurrentIdx] = useState<number>(-1);
   const [statusMessage, setStatusMessage] = useState("");
-  const [zoomUrl, setZoomUrl] = useState<string | null>(null);
+  const [zoomState, setZoomState] = useState<{url: string, rotation: number} | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<boolean>(false);
+  
+  // CRITICAL FIX: Keep a ref of items to access fresh state inside async loops
+  const itemsRef = useRef<BatchItem[]>([]);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  // --- BACKGROUND PDF PREVIEW GENERATOR ---
+  useEffect(() => {
+    const generateNextPreview = async () => {
+        // Find the first PDF that has NO previewUrl and is NOT currently being processed by this effect (implicitly)
+        // We use the functional state update to ensure we don't pick the same one twice if effect fires rapidly
+        // However, since PDF conversion is async, we need a flag or just check strictly.
+        
+        // Simple strategy: Check items in ref. If found, process ONE, then update state. 
+        // The state update triggers this effect again.
+        const itemNeedsPreview = items.find(i => !i.previewUrl && i.file.type === 'application/pdf');
+
+        if (itemNeedsPreview) {
+            try {
+                // console.log("Generating preview for PDF:", itemNeedsPreview.file.name);
+                const jpegFile = await convertPdfToJpeg(itemNeedsPreview.file);
+                const previewUrl = URL.createObjectURL(jpegFile);
+
+                setItems(prev => prev.map(i => i.id === itemNeedsPreview.id ? { ...i, previewUrl } : i));
+            } catch (err) {
+                console.error("Failed to generate preview for", itemNeedsPreview.file.name, err);
+                // Mark as failed preview so we don't loop forever
+                setItems(prev => prev.map(i => i.id === itemNeedsPreview.id ? { ...i, previewUrl: 'error' } : i));
+            }
+        }
+    };
+    
+    // Small timeout to not block UI thread immediately
+    const timer = setTimeout(generateNextPreview, 100);
+    return () => clearTimeout(timer);
+  }, [items]);
+
 
   // Stats
   const successCount = items.filter(i => i.status === 'success').length;
@@ -38,7 +76,18 @@ export const BatchManager: React.FC = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isRunning]);
 
-  // 1. Lazy File Selection (Low Memory Usage)
+  // Clean up ObjectURLs to avoid memory leaks
+  useEffect(() => {
+    return () => {
+      items.forEach(item => {
+        if (item.previewUrl && item.previewUrl.startsWith('blob:') && item.previewUrl !== 'error') {
+          URL.revokeObjectURL(item.previewUrl);
+        }
+      });
+    };
+  }, [items]);
+
+  // 1. Lazy File Selection (Low Memory Usage + Instant Preview)
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
 
@@ -49,13 +98,23 @@ export const BatchManager: React.FC = () => {
       return;
     }
 
-    // Just store the file handle. DO NOT PROCESS IMAGE YET.
-    const newItems: BatchItem[] = filesArray.map(file => ({
-      id: crypto.randomUUID(),
-      file,
-      data: { numeroDoc: '', serie: '', dataEmissao: '' },
-      status: 'queued' // Waiting in line
-    }));
+    const newItems: BatchItem[] = filesArray.map(file => {
+      // INSTANT PREVIEW for Images
+      let instantPreview = undefined;
+      if (file.type.startsWith('image/')) {
+        instantPreview = URL.createObjectURL(file);
+      }
+      // For PDFs, we leave undefined. The useEffect above will catch it.
+
+      return {
+        id: crypto.randomUUID(),
+        file,
+        previewUrl: instantPreview, 
+        rotation: 0,
+        data: { numeroDoc: '', serie: '', dataEmissao: '' },
+        status: 'queued'
+      };
+    });
 
     setItems(prev => [...prev, ...newItems]);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -68,13 +127,8 @@ export const BatchManager: React.FC = () => {
     abortRef.current = false;
     setStatusMessage("Iniciando fila de processamento...");
 
-    // Get all items that need processing
-    // We iterate by index to update the main state correctly
-    // Note: We use a fresh reference to 'items' via functional state updates in the loop, 
-    // but the loop driver needs to know order.
-    
-    // Simple strategy: Iterate through the IDs that are currently 'queued' or 'error' (retry)
-    const queueIds = items
+    // Get IDs to process (snapshot at start)
+    const queueIds = itemsRef.current
         .filter(i => i.status === 'queued' || i.status === 'error')
         .map(i => i.id);
 
@@ -90,25 +144,21 @@ export const BatchManager: React.FC = () => {
         const id = queueIds[i];
         setCurrentIdx(i + 1);
         
-        // Find current item object (fresh from state)
-        // We need to retrieve the File object which is stored in state
-        let currentItem: BatchItem | undefined;
-        setItems(prev => {
-            currentItem = prev.find(item => item.id === id);
-            return prev;
-        });
+        // CRITICAL FIX: Read from REF to get the absolute latest state (including manual typing)
+        const currentItem = itemsRef.current.find(item => item.id === id);
 
-        if (!currentItem) continue;
+        if (!currentItem) {
+            console.warn("Item not found in ref, skipping:", id);
+            continue;
+        }
 
         try {
-            setStatusMessage(`Processando item ${i + 1}/${total}: Preparando imagem...`);
-            
-            // --- STEP A: PREPARE IMAGE (Memory intensive part) ---
+            setStatusMessage(`Processando item ${i + 1}/${total}: Otimizando imagem...`);
             updateItemStatus(id, 'processing_image');
             
+            // --- STEP A: PREPARE IMAGE ---
             let fileToProcess = currentItem.file;
             
-            // Convert PDF if needed
             if (fileToProcess.type === 'application/pdf') {
                 try {
                     fileToProcess = await convertPdfToJpeg(fileToProcess);
@@ -117,28 +167,43 @@ export const BatchManager: React.FC = () => {
                 }
             }
 
-            // Resize/Compress
-            const processed = await processImage(fileToProcess);
+            // Resize/Compress + ROTATE based on user selection
+            const processed = await processImage(fileToProcess, currentItem.rotation || 0);
             
-            // Update state with Preview (so user sees it temporarily)
+            // Save base64 to state
             setItems(prev => prev.map(item => item.id === id ? {
                 ...item,
                 base64: processed.base64,
-                previewUrl: processed.previewUrl
+                // We update preview URL here to the "processed" one (which is rotated/cropped)
+                // This gives feedback that processing worked
+                previewUrl: processed.previewUrl, 
+                // Reset rotation to 0 visually because the image itself is now rotated
+                rotation: 0 
             } : item));
 
-            // --- STEP B: AI EXTRACTION ---
-            setStatusMessage(`Processando item ${i + 1}/${total}: Analisando com IA...`);
-            updateItemStatus(id, 'analyzing_ai');
+            // --- STEP B: CHECK FOR MANUAL OVERRIDE (QUOTA FALLBACK) ---
+            // Use currentItem from REF to ensure we see what user typed 1ms ago
+            const isManualDataFilled = currentItem.data.numeroDoc && currentItem.data.dataEmissao;
+            
+            let extractedData = currentItem.data;
 
-            // Call Gemini
-            // Note: extractDataFromImage already has internal retry for 429
-            const extractedData = await extractDataFromImage(processed.base64);
+            if (!isManualDataFilled) {
+                // Normal Flow: Use AI
+                setStatusMessage(`Processando item ${i + 1}/${total}: Analisando com IA...`);
+                updateItemStatus(id, 'analyzing_ai');
 
-            setItems(prev => prev.map(item => item.id === id ? {
-                ...item,
-                data: extractedData
-            } : item));
+                extractedData = await extractDataFromImage(processed.base64);
+
+                // Update state with AI result
+                setItems(prev => prev.map(item => item.id === id ? {
+                    ...item,
+                    data: extractedData
+                } : item));
+            } else {
+                // Fallback Flow: Skip AI
+                setStatusMessage(`Item ${i + 1}/${total}: Dados manuais detectados (Sem IA). Preparando...`);
+                await new Promise(r => setTimeout(r, 400));
+            }
 
             // --- STEP C: AUTO UPLOAD ---
             setStatusMessage(`Processando item ${i + 1}/${total}: Enviando para o Drive...`);
@@ -163,32 +228,34 @@ export const BatchManager: React.FC = () => {
                 ...item,
                 status: 'success',
                 base64: undefined, // CLEAR RAM
-                // We keep previewUrl if you want, or clear it too for max memory saving
-                // For 100 items, clearing previewUrl is recommended if standard DOM img tags are used.
-                // Let's keep it for now but if memory issues persist, clear it.
             } : item));
 
             processedCount++;
 
-            // --- STEP E: SAFETY BRAKE (The 15s Wait) ---
-            if (i < total - 1) { // Don't wait after the last one
-                for (let s = 15; s > 0; s--) {
+            // --- STEP E: SAFETY BRAKE ---
+            const waitTime = isManualDataFilled ? 2 : 15; 
+            
+            if (i < total - 1) { 
+                for (let s = waitTime; s > 0; s--) {
                     if (abortRef.current) break;
-                    setStatusMessage(`Sucesso! Aguardando ${s}s para o próximo (Proteção de Cota)...`);
+                    setStatusMessage(`Sucesso! Aguardando ${s}s...`);
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
             }
 
         } catch (err: any) {
             console.error(`Error processing item ${id}:`, err);
+            
+            const errorMessage = err.message || "Erro desconhecido";
+            const isQuotaError = errorMessage.toLowerCase().includes("cota") || errorMessage.toLowerCase().includes("quota");
+
             setItems(prev => prev.map(item => item.id === id ? {
                 ...item,
                 status: 'error',
-                errorMessage: err.message || "Erro desconhecido",
-                base64: undefined // Clear RAM even on error
+                errorMessage: isQuotaError ? "Cota Excedida. Preencha Manualmente." : errorMessage,
+                base64: undefined // Clear RAM
             } : item));
             
-            // On error, we still wait a bit just in case it was a quota error that slipped through
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
     }
@@ -215,8 +282,24 @@ export const BatchManager: React.FC = () => {
     setItems(prev => prev.map(i => i.id === id ? { ...i, data: { ...i.data, [field]: value } } : i));
   };
 
+  const handleRotate = (id: string) => {
+      setItems(prev => prev.map(i => {
+          if (i.id !== id) return i;
+          const currentRot = i.rotation || 0;
+          // Counter-Clockwise Logic: Add 270 degrees (equiv to -90)
+          // 0 -> 270, 270 -> 180, 180 -> 90, 90 -> 0
+          const newRot = (currentRot + 270) % 360;
+          return { ...i, rotation: newRot };
+      }));
+  };
+
   const handleClearFinished = () => {
     setItems(prev => prev.filter(i => i.status !== 'success'));
+  };
+
+  const handleClearQueue = () => {
+    // Instant clear of pending/error items without confirmation dialog
+    setItems(prev => prev.filter(i => i.status === 'success'));
   };
 
   const handleRetry = (id: string) => {
@@ -279,7 +362,8 @@ export const BatchManager: React.FC = () => {
                 onRemove={handleRemove}
                 onUpdateData={handleUpdateData}
                 onRetry={handleRetry}
-                onZoom={setZoomUrl}
+                onRotate={handleRotate}
+                onZoom={(url) => setZoomState({ url, rotation: item.rotation || 0 })}
             />
          ))}
          
@@ -300,6 +384,18 @@ export const BatchManager: React.FC = () => {
          
          {!isRunning && (
             <>
+                {/* Trash Button - Only appears if there are queued or error items */}
+                {(queuedCount > 0 || errorCount > 0) && (
+                    <Button 
+                        variant="ghost" 
+                        onClick={handleClearQueue}
+                        className="text-red-500 hover:bg-red-50 hover:text-red-700 border border-transparent hover:border-red-200 px-3 shrink-0"
+                        title="Remover todos os pendentes e erros"
+                    >
+                        <Trash2 size={24} />
+                    </Button>
+                )}
+
                 {items.length < MAX_BATCH_SIZE && (
                     <Button 
                         variant="outline" 
@@ -340,9 +436,10 @@ export const BatchManager: React.FC = () => {
       </div>
 
       <ImageZoomModal 
-         isOpen={!!zoomUrl} 
-         imageUrl={zoomUrl || ''} 
-         onClose={() => setZoomUrl(null)} 
+         isOpen={!!zoomState} 
+         imageUrl={zoomState?.url || ''} 
+         rotation={zoomState?.rotation || 0}
+         onClose={() => setZoomState(null)} 
       />
     </div>
   );

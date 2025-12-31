@@ -5,10 +5,11 @@ import { motion } from 'framer-motion';
 interface ImageZoomModalProps {
   isOpen: boolean;
   imageUrl: string;
+  rotation?: number;
   onClose: () => void;
 }
 
-export const ImageZoomModal: React.FC<ImageZoomModalProps> = ({ isOpen, imageUrl, onClose }) => {
+export const ImageZoomModal: React.FC<ImageZoomModalProps> = ({ isOpen, imageUrl, rotation = 0, onClose }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
 
@@ -68,7 +69,8 @@ export const ImageZoomModal: React.FC<ImageZoomModalProps> = ({ isOpen, imageUrl
           
           // Animation & Zoom
           initial={{ opacity: 0, scale: 0.8 }}
-          animate={{ opacity: 1, scale: scale }}
+          // We apply the visual rotation here
+          animate={{ opacity: 1, scale: scale, rotate: rotation }}
           transition={{ duration: 0.2 }}
           
           // Interactions

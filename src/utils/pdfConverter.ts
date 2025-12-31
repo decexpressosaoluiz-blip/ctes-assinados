@@ -24,8 +24,10 @@ export const convertPdfToJpeg = async (file: File): Promise<File> => {
       // Get the first page
       const page = await pdf.getPage(1);
       
-      // Scale 3.0 provides high resolution for AI OCR, fixing issues with small text or similar digits
-      const scale = 3.0;
+      // Scale 2.0 is the sweet spot. 
+      // 3.0 was too slow (generating 2500px+ images). 
+      // 2.0 generates ~1200-1600px width which is perfect for Gemini Flash and fast for browser.
+      const scale = 2.0;
       const viewport = page.getViewport({ scale });
       
       // Prepare canvas
@@ -57,7 +59,7 @@ export const convertPdfToJpeg = async (file: File): Promise<File> => {
         } else {
           reject(new Error('Canvas to Blob conversion failed'));
         }
-      }, 'image/jpeg', 0.90); // Increased quality to 0.90 for better detail preservation
+      }, 'image/jpeg', 0.80); 
       
     } catch (error) {
       console.error('PDF Conversion Error:', error);
