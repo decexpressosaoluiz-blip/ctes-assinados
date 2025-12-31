@@ -200,12 +200,13 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
             {/* Numero Input */}
             <div>
                 <input
-                  type="tel"
-                  placeholder="Número"
+                  type="text"
+                  placeholder="Ex: 27681"
                   value={item.data.numeroDoc}
-                  onChange={(e) => onUpdateData(item.id, 'numeroDoc', e.target.value)}
+                  onChange={(e) => onUpdateData(item.id, 'numeroDoc', e.target.value.replace(/\D/g, ''))}
                   disabled={!allowEditing}
                   inputMode="numeric"
+                  pattern="[0-9]*"
                   className={`w-full h-8 text-lg font-bold bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
                      ${isProblematic && !item.data.numeroDoc 
                         ? 'border-red-400 text-red-700 placeholder-red-300' 
@@ -221,8 +222,10 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                   type="text"
                   placeholder="Série"
                   value={item.data.serie}
-                  onChange={(e) => onUpdateData(item.id, 'serie', e.target.value)}
+                  onChange={(e) => onUpdateData(item.id, 'serie', e.target.value.replace(/\D/g, ''))}
                   disabled={!allowEditing}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   className={`w-full h-8 text-base text-gray-700 dark:text-gray-300 bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
                      ${isProblematic && !item.data.serie
                         ? 'border-red-400 text-red-700 placeholder-red-300' 
