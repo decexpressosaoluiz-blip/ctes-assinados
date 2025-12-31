@@ -1,0 +1,7 @@
+{
+  "name": "Ctes-Assinados-SLE",
+  "description": "High-performance DACTE/CTE digitization tool for São Luiz Express logistics.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
