@@ -31,11 +31,6 @@ export const BatchManager: React.FC = () => {
   useEffect(() => {
     const generateNextPreview = async () => {
         // Find the first PDF that has NO previewUrl and is NOT currently being processed by this effect (implicitly)
-        // We use the functional state update to ensure we don't pick the same one twice if effect fires rapidly
-        // However, since PDF conversion is async, we need a flag or just check strictly.
-        
-        // Simple strategy: Check items in ref. If found, process ONE, then update state. 
-        // The state update triggers this effect again.
         const itemNeedsPreview = items.find(i => !i.previewUrl && i.file.type === 'application/pdf');
 
         if (itemNeedsPreview) {
@@ -76,16 +71,16 @@ export const BatchManager: React.FC = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [isRunning]);
 
-  // Clean up ObjectURLs to avoid memory leaks
+  // Clean up ObjectURLs ONLY on unmount to prevent premature revocation causing broken images
   useEffect(() => {
     return () => {
-      items.forEach(item => {
+      itemsRef.current.forEach(item => {
         if (item.previewUrl && item.previewUrl.startsWith('blob:') && item.previewUrl !== 'error') {
           URL.revokeObjectURL(item.previewUrl);
         }
       });
     };
-  }, [items]);
+  }, []);
 
   // 1. Lazy File Selection (Low Memory Usage + Instant Preview)
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -110,7 +105,8 @@ export const BatchManager: React.FC = () => {
         id: crypto.randomUUID(),
         file,
         previewUrl: instantPreview, 
-        rotation: 0,
+        // AUTO-ROTATION: Start at 270 (90 deg counter-clockwise)
+        rotation: 270,
         data: { numeroDoc: '', serie: '', dataEmissao: '' },
         status: 'queued'
       };
@@ -170,6 +166,11 @@ export const BatchManager: React.FC = () => {
             // Resize/Compress + ROTATE based on user selection
             const processed = await processImage(fileToProcess, currentItem.rotation || 0);
             
+            // Cleanup previous blob if exists before overwriting with Data URL
+            if (currentItem.previewUrl?.startsWith('blob:')) {
+                URL.revokeObjectURL(currentItem.previewUrl);
+            }
+
             // Save base64 to state
             setItems(prev => prev.map(item => item.id === id ? {
                 ...item,
@@ -183,7 +184,8 @@ export const BatchManager: React.FC = () => {
 
             // --- STEP B: CHECK FOR MANUAL OVERRIDE (QUOTA FALLBACK) ---
             // Use currentItem from REF to ensure we see what user typed 1ms ago
-            const isManualDataFilled = currentItem.data.numeroDoc && currentItem.data.dataEmissao;
+            // NOW MANDATORY: Numero, Serie, AND Data must be present.
+            const isManualDataFilled = currentItem.data.numeroDoc && currentItem.data.dataEmissao && currentItem.data.serie;
             
             let extractedData = currentItem.data;
 
@@ -275,7 +277,13 @@ export const BatchManager: React.FC = () => {
 
   // Handlers
   const handleRemove = (id: string) => {
-    setItems(prev => prev.filter(i => i.id !== id));
+    setItems(prev => {
+        const itemToRemove = prev.find(i => i.id === id);
+        if (itemToRemove?.previewUrl?.startsWith('blob:')) {
+            URL.revokeObjectURL(itemToRemove.previewUrl);
+        }
+        return prev.filter(i => i.id !== id);
+    });
   };
 
   const handleUpdateData = (id: string, field: keyof ExtractedData, value: string) => {
@@ -294,12 +302,35 @@ export const BatchManager: React.FC = () => {
   };
 
   const handleClearFinished = () => {
-    setItems(prev => prev.filter(i => i.status !== 'success'));
+    setItems(prev => {
+        const kept = prev.filter(i => i.status !== 'success');
+        const removed = prev.filter(i => i.status === 'success');
+        
+        // Technically success items might have previewUrls if we kept them, but usually we clear base64.
+        // If previewUrl is blob, revoke it.
+        removed.forEach(item => {
+             if (item.previewUrl?.startsWith('blob:')) {
+                URL.revokeObjectURL(item.previewUrl);
+             }
+        });
+        return kept;
+    });
   };
 
   const handleClearQueue = () => {
     // Instant clear of pending/error items without confirmation dialog
-    setItems(prev => prev.filter(i => i.status === 'success'));
+    setItems(prev => {
+        const kept = prev.filter(i => i.status === 'success');
+        const removed = prev.filter(i => i.status !== 'success');
+        
+        removed.forEach(item => {
+             if (item.previewUrl?.startsWith('blob:')) {
+                URL.revokeObjectURL(item.previewUrl);
+             }
+        });
+        
+        return kept;
+    });
   };
 
   const handleRetry = (id: string) => {

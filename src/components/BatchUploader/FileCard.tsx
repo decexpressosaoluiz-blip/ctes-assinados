@@ -23,8 +23,8 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
   const isSuccess = item.status === 'success';
   const isError = item.status === 'error';
   
-  // Data Validation
-  const isDataIncomplete = !item.data.numeroDoc || !item.data.dataEmissao;
+  // Data Validation - NOW INCLUDES SERIE
+  const isDataIncomplete = !item.data.numeroDoc || !item.data.dataEmissao || !item.data.serie;
   const isSuspiciousRead = item.data.numeroDoc.length > 0 && item.data.numeroDoc.length < 3;
   const isAIWarning = item.status === 'ready' && (isDataIncomplete || isSuspiciousRead);
 
@@ -71,8 +71,8 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
   }
 
   // Show manual hint if it's an error OR if it's queued/waiting
-  const showManualHint = (isError || isQueued) && (!item.data.numeroDoc || !item.data.dataEmissao);
-  const showRetryAsUpload = (isError || isQueued) && item.data.numeroDoc && item.data.dataEmissao;
+  const showManualHint = (isError || isQueued) && isDataIncomplete;
+  const showRetryAsUpload = (isError || isQueued) && !isDataIncomplete;
 
   // Allow editing unless it's actively processing or successfully finished
   const allowEditing = !isSuccess && !isActiveProcessing;
@@ -107,11 +107,10 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
       )}
 
       <div className="p-3 flex gap-4">
-        {/* Thumbnail Section - Reverted to Full View for correct Rotation handling */}
+        {/* Thumbnail Section */}
         <div className="relative w-24 h-32 shrink-0 bg-gray-100 dark:bg-gray-800 rounded-lg overflow-hidden group border border-gray-200 dark:border-gray-600 shadow-inner">
           {showPreview ? (
             <div className="w-full h-full relative overflow-hidden bg-gray-900/5">
-              {/* Image with object-contain to ensure rotation is visible correctly without cropping */}
               <img 
                 src={item.previewUrl} 
                 alt="Doc Preview" 
@@ -123,12 +122,10 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
               
               {/* Overlay Actions */}
               <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 z-10">
-                 {/* Zoom Button */}
                  <button onClick={() => onZoom(item.previewUrl!)} className="text-white p-2 hover:scale-110 transition-transform bg-white/20 rounded-full" title="Ver Fullscreen">
                     <ZoomIn size={18} />
                  </button>
                  
-                 {/* Rotate Button */}
                  {allowEditing && (
                     <button onClick={() => onRotate(item.id)} className="text-white p-2 hover:scale-110 transition-transform bg-white/20 rounded-full" title="Girar Anti-horário">
                        <RotateCcw size={18} />
@@ -183,10 +180,10 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                         {statusText}
                     </span>
                 </div>
-                {/* Manual hint if quota exceeded */}
+                {/* Manual hint if data missing */}
                 {isError && !showRetryAsUpload && (
                    <div className="text-[10px] text-red-500 mt-0.5 leading-tight">
-                      Preencha os dados abaixo e clique em Enviar Manualmente.
+                      Preencha todos os campos (CTE, Série e Data).
                    </div>
                 )}
              </div>
@@ -199,9 +196,9 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
           </div>
 
           {/* Inputs Grid */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-[2fr_1fr] gap-3 items-end">
             {/* Numero Input */}
-            <div className="col-span-2 sm:col-span-1">
+            <div>
                 <input
                   type="tel"
                   placeholder="Número"
@@ -209,7 +206,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                   onChange={(e) => onUpdateData(item.id, 'numeroDoc', e.target.value)}
                   disabled={!allowEditing}
                   inputMode="numeric"
-                  className={`w-full text-lg font-bold bg-transparent border-b focus:outline-none placeholder-gray-400 pb-1 transition-colors
+                  className={`w-full h-8 text-lg font-bold bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
                      ${isProblematic && !item.data.numeroDoc 
                         ? 'border-red-400 text-red-700 placeholder-red-300' 
                         : 'border-gray-300 text-brand-primary focus:border-brand-primary'}
@@ -219,19 +216,25 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
             </div>
             
             {/* Serie Input */}
-             <div className="col-span-2 sm:col-span-1">
+             <div>
                 <input
                   type="text"
                   placeholder="Série"
                   value={item.data.serie}
                   onChange={(e) => onUpdateData(item.id, 'serie', e.target.value)}
                   disabled={!allowEditing}
-                  className={`w-full text-sm text-gray-700 dark:text-gray-300 bg-transparent border-b border-gray-300 focus:border-brand-primary focus:outline-none placeholder-gray-400 pb-1 ${!allowEditing ? 'opacity-50' : ''}`}
+                  className={`w-full h-8 text-base text-gray-700 dark:text-gray-300 bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
+                     ${isProblematic && !item.data.serie
+                        ? 'border-red-400 text-red-700 placeholder-red-300' 
+                        : 'border-gray-300 focus:border-brand-primary'}
+                     ${!allowEditing ? 'opacity-50' : ''}
+                  `}
                 />
             </div>
-
-            {/* Date Input with Auto-Mask */}
-            <div className="col-span-2">
+          </div>
+          
+          {/* Date Input */}
+          <div className="w-full">
                  <input
                   type="text"
                   placeholder="DD/MM/AAAA"
@@ -240,14 +243,13 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                   disabled={!allowEditing}
                   maxLength={10}
                   inputMode="numeric"
-                  className={`w-full text-sm bg-transparent border-b focus:outline-none placeholder-gray-400 pb-1 transition-colors
+                  className={`w-full h-8 text-sm bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
                       ${isProblematic && !item.data.dataEmissao 
                         ? 'border-red-400 text-red-700 placeholder-red-300' 
                         : 'border-gray-300 text-gray-700 dark:text-gray-300 focus:border-brand-primary'}
                       ${!allowEditing ? 'opacity-50' : ''}
                   `}
                 />
-            </div>
           </div>
 
           {/* Retry / Manual Upload Button */}
@@ -258,7 +260,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                 className={`h-9 text-xs w-full mt-2 ${showRetryAsUpload ? 'bg-brand-primary text-white' : 'border-red-300 text-red-700 hover:bg-red-100 bg-white/50'}`}
             >
                 {showRetryAsUpload ? (
-                    <><Upload size={12} className="mr-2" /> Enviar Manualmente (Sem IA)</>
+                    <><Upload size={12} className="mr-2" /> Enviar Manualmente</>
                 ) : (
                     <><RotateCw size={12} className="mr-2" /> Tentar Novamente com IA</>
                 )}

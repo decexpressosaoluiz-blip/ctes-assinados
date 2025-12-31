@@ -31,28 +31,32 @@ export const ImageZoomModal: React.FC<ImageZoomModalProps> = ({ isOpen, imageUrl
     setScale(scale > 1.2 ? 1 : 2.5);
   };
 
+  // Determine if rotation is 90 or 270 degrees (sideways)
+  const isSideways = Math.abs(rotation % 180) === 90;
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-md">
-      {/* Controls - High Z-index to stay on top */}
+      {/* Controls - FIXED position to always stay on screen regardless of image size/offset */}
       <button 
         onClick={onClose}
-        className="absolute top-6 right-6 z-[110] p-3 bg-white/10 text-white rounded-full hover:bg-white/20 transition-colors backdrop-blur-md shadow-lg border border-white/10"
+        className="fixed top-4 right-4 z-[120] p-3 bg-white/10 text-white rounded-full hover:bg-white/20 transition-colors backdrop-blur-md shadow-lg border border-white/10"
       >
         <X size={28} />
       </button>
 
       {/* Instructions */}
-      <div className="absolute bottom-10 left-0 right-0 z-[110] flex justify-center pointer-events-none">
+      <div className="fixed bottom-10 left-0 right-0 z-[120] flex justify-center pointer-events-none">
         <p className="text-white/90 text-sm bg-black/60 px-4 py-2 rounded-full backdrop-blur-md border border-white/10 shadow-lg">
           {scale === 1 ? "Duplo clique para zoom" : "Arraste para mover • Duplo clique para sair"}
         </p>
       </div>
 
-      {/* Image Container - Clips overflow */}
+      {/* Image Container - Clips overflow only if scale is 1, otherwise let it overflow for drag */}
       <div 
         ref={containerRef} 
-        className="w-full h-full flex items-center justify-center overflow-hidden p-4"
+        className="w-full h-full flex items-center justify-center p-0 md:p-4"
         onWheel={handleWheel}
+        style={{ overflow: scale > 1 ? 'visible' : 'hidden' }}
       >
         <motion.img
           src={imageUrl}
@@ -75,10 +79,16 @@ export const ImageZoomModal: React.FC<ImageZoomModalProps> = ({ isOpen, imageUrl
           
           // Interactions
           onDoubleClick={toggleZoom}
-          className="max-w-full max-h-full object-contain cursor-grab active:cursor-grabbing shadow-2xl"
+          className="object-contain cursor-grab active:cursor-grabbing shadow-2xl"
           
-          // CRITICAL: Disables browser scrolling so drag works on mobile
-          style={{ touchAction: "none" }} 
+          // CRITICAL: Swapping constraints ensures rotated images fit within viewport bounds
+          style={{ 
+             touchAction: "none",
+             maxWidth: isSideways ? '85vh' : '90vw',
+             maxHeight: isSideways ? '90vw' : '85vh',
+             width: 'auto',
+             height: 'auto'
+          }} 
         />
       </div>
     </div>
