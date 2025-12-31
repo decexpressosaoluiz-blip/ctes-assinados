@@ -12,6 +12,7 @@ export default defineConfig(({ mode }) => {
     base: '/',
     build: {
       outDir: 'dist',
+      target: 'esnext', // Fix: Allow Top-Level Await for pdfjs-dist
     },
     define: {
       // Correctly stringify the API key to be replaced during build time
