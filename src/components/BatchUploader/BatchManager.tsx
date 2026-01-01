@@ -114,16 +114,28 @@ export const BatchManager: React.FC = () => {
 
     setItems(prev => [...prev, ...newItems]);
     if (fileInputRef.current) fileInputRef.current.value = '';
+
+    // AUTO START QUEUE IF NOT RUNNING
+    // Use a small timeout to let state settle/refs update via useEffect
+    setTimeout(() => {
+        if (!abortRef.current && !isRunning) {
+            startQueue();
+        }
+    }, 500);
   };
 
   // 2. The Robust Sequential Loop
   const startQueue = async () => {
+    // If already running, do nothing (prevent double clicks)
+    // Note: We access the STATE isRunning here, but inside loop we check abortRef too
     if (isRunning) return;
+    
     setIsRunning(true);
     abortRef.current = false;
     setStatusMessage("Iniciando fila de processamento...");
 
     // Get IDs to process (snapshot at start)
+    // We re-read itemsRef here because this function might be called via setTimeout
     const queueIds = itemsRef.current
         .filter(i => i.status === 'queued' || i.status === 'error')
         .map(i => i.id);
@@ -188,6 +200,7 @@ export const BatchManager: React.FC = () => {
             const isManualDataFilled = currentItem.data.numeroDoc && currentItem.data.dataEmissao && currentItem.data.serie;
             
             let extractedData = currentItem.data;
+            let needsReview = false;
 
             if (!isManualDataFilled) {
                 // Normal Flow: Use AI
@@ -201,10 +214,34 @@ export const BatchManager: React.FC = () => {
                     ...item,
                     data: extractedData
                 } : item));
+
+                // CHECK CONFIDENCE
+                // If AI flagged as needsReview OR if critical fields are empty
+                if (extractedData.needsReview || !extractedData.numeroDoc || !extractedData.serie || !extractedData.dataEmissao) {
+                    needsReview = true;
+                }
+
             } else {
                 // Fallback Flow: Skip AI
                 setStatusMessage(`Item ${i + 1}/${total}: Dados manuais detectados (Sem IA). Preparando...`);
                 await new Promise(r => setTimeout(r, 400));
+            }
+
+            // --- STEP B.5: PAUSE FOR REVIEW IF NEEDED ---
+            if (needsReview) {
+                setStatusMessage(`Item ${i + 1}/${total}: Revisão necessária. Aguardando usuário.`);
+                // Set status to 'ready' (Waiting for Confirmation)
+                // Set error message as a "Warning"
+                setItems(prev => prev.map(item => item.id === id ? {
+                    ...item,
+                    status: 'ready',
+                    errorMessage: "Confirme os dados antes do envio.",
+                    // Do NOT clear base64 yet, user might need it if we re-implement re-upload logic, 
+                    // though for now we are just confirming data.
+                } : item));
+                
+                // Continue the loop to process other items, effectively skipping upload for this one
+                continue; 
             }
 
             // --- STEP C: AUTO UPLOAD ---
@@ -230,6 +267,7 @@ export const BatchManager: React.FC = () => {
                 ...item,
                 status: 'success',
                 base64: undefined, // CLEAR RAM
+                errorMessage: undefined
             } : item));
 
             processedCount++;
@@ -299,6 +337,55 @@ export const BatchManager: React.FC = () => {
           const newRot = (currentRot + 270) % 360;
           return { ...i, rotation: newRot };
       }));
+  };
+
+  // NEW: Handle Manual Confirmation/Upload
+  const handleConfirmUpload = async (id: string) => {
+     // Get fresh item data
+     const item = itemsRef.current.find(i => i.id === id);
+     if (!item) return;
+
+     // Simple validation
+     if (!item.data.numeroDoc || !item.data.dataEmissao || !item.data.serie) {
+         alert("Preencha todos os campos antes de confirmar.");
+         return;
+     }
+
+     updateItemStatus(id, 'uploading');
+
+     try {
+         const [dia, mes, ano] = item.data.dataEmissao.includes('/') 
+                ? item.data.dataEmissao.split('/') 
+                : ['', '', ''];
+
+         await uploadToDrive({
+                ano: ano || '2025',
+                mes: mes || '01',
+                dia: dia || '01',
+                serie: item.data.serie || 'N/A',
+                numeroDoc: item.data.numeroDoc,
+                mimeType: 'image/jpeg',
+                // If base64 is gone (cleaned up), we might need to re-process (unlikely in 'ready' state logic above)
+                // But if it is missing, we can't upload. Logic above keeps base64 for 'ready' items.
+                imagemBase64: item.base64 || '' 
+         });
+
+         setItems(prev => prev.map(i => i.id === id ? {
+             ...i,
+             status: 'success',
+             base64: undefined,
+             errorMessage: undefined,
+             data: { ...i.data, needsReview: false } // Clear flag
+         } : i));
+
+     } catch (err: any) {
+         setItems(prev => prev.map(i => i.id === id ? {
+             ...i,
+             status: 'error',
+             errorMessage: err.message || "Erro ao enviar.",
+             // Keep base64 so they can retry
+         } : i));
+     }
   };
 
   const handleClearFinished = () => {
@@ -393,6 +480,7 @@ export const BatchManager: React.FC = () => {
                 onRemove={handleRemove}
                 onUpdateData={handleUpdateData}
                 onRetry={handleRetry}
+                onConfirm={handleConfirmUpload} // Pass confirmation handler
                 onRotate={handleRotate}
                 onZoom={(url) => setZoomState({ url, rotation: item.rotation || 0 })}
             />

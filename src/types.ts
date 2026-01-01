@@ -1,3 +1,4 @@
+
 export interface ProcessedImage {
   base64: string; // Raw base64 string without prefix
   previewUrl: string; // Data URL for display
@@ -10,6 +11,7 @@ export interface ExtractedData {
   numeroDoc: string;
   dataEmissao: string;
   serie: string;
+  needsReview?: boolean; // New flag for AI confidence
 }
 
 export interface UploadPayload {

@@ -23,25 +23,30 @@ export const extractDataFromImage = async (base64Image: string): Promise<Extract
     throw new Error("Chave de API não configurada no sistema (API_KEY missing).");
   }
 
-  const prompt = `Analise este documento de transporte (DACTE, CTE) com EXTREMA ATENÇÃO AOS DETALHES. O documento pode ser uma digitalização antiga ou de baixa qualidade.
+  const prompt = `Analise este documento de transporte (DACTE, CTE) com EXTREMA ATENÇÃO.
     
-    INSTRUÇÕES CRÍTICAS DE EXTRAÇÃO:
+    INSTRUÇÕES DE EXTRAÇÃO E VALIDAÇÃO DE QUALIDADE:
 
-    1. NÚMERO DO DOCUMENTO (Prioridade Máxima):
-       - Localize o campo "NÚMERO" ou "Nº".
-       - ATENÇÃO: Muitas vezes o primeiro dígito está muito próximo da borda vertical ou linha da tabela. NÃO O IGNORE.
-       - Exemplo: Se parecer "7695" mas houver um borrão ou linha antes, provavelmente é "27695" ou "17695". Olhe o contexto.
-       - Formato esperado: Dígitos sequenciais. Remova zeros à esquerda (000123 -> 123).
-       - SE HOUVER DÚVIDA no primeiro dígito, prefira incluir o dígito a ignorá-lo.
-
-    2. DATA DE EMISSÃO (Correção de Ano):
-       - Localize a data de emissão.
-       - CUIDADO COM O ANO: O ano atual é 2025. Se o ano parecer "2023" ou "2028", verifique se não é um "5" mal impresso (o topo do 5 às vezes parece plano como um 3 em matriciais).
-       - Prefira "2025" se a leitura for ambígua entre 2023/2025.
+    1. NÚMERO DO DOCUMENTO:
+       - Localize "NÚMERO" ou "Nº".
+       - Formato: Dígitos sequenciais. Remova zeros à esquerda.
+       
+    2. DATA DE EMISSÃO:
        - Formato: DD/MM/AAAA.
+       - Cuidado com o ano atual (2025).
 
     3. SÉRIE:
-       - Número pequeno, geralmente 1, 2, 307, etc.
+       - Geralmente 1, 2, 307.
+
+    4. CRITÉRIOS DE REVISÃO HUMANA (needsReview):
+       Defina "needsReview" como TRUE se:
+       - A imagem estiver muito borrada, escura ou de baixa resolução.
+       - O número do documento estiver cortado na borda.
+       - Você tiver QUALQUER dúvida sobre um dígito (ex: não sabe se é '3' ou '8').
+       - O documento parecer estar "deitado" (rotação incorreta) dificultando a leitura.
+       - Faltar campos obrigatórios (Número, Data ou Série).
+
+       Se a leitura estiver CLARA e INEQUÍVOCA, defina "needsReview" como FALSE.
 
     Retorne JSON estrito.`;
 
@@ -70,9 +75,10 @@ export const extractDataFromImage = async (base64Image: string): Promise<Extract
             properties: {
               numeroDoc: { type: Type.STRING },
               dataEmissao: { type: Type.STRING },
-              serie: { type: Type.STRING }
+              serie: { type: Type.STRING },
+              needsReview: { type: Type.BOOLEAN, description: "True se a imagem estiver ruim, cortada ou ambígua." }
             },
-            required: ["numeroDoc", "dataEmissao", "serie"]
+            required: ["numeroDoc", "dataEmissao", "serie", "needsReview"]
           }
         }
       });
@@ -80,7 +86,10 @@ export const extractDataFromImage = async (base64Image: string): Promise<Extract
       const text = response.text;
       if (!text) throw new Error("No response from AI");
 
-      return JSON.parse(text) as ExtractedData;
+      // Robust JSON Parsing: Strip Markdown blocks if present
+      const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      
+      return JSON.parse(cleanText) as ExtractedData;
 
     } catch (error: any) {
       // Robust Error Parsing: Convert everything to string to catch nested JSON errors

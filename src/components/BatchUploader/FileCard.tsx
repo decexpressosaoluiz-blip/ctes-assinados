@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, AlertCircle, CheckCircle, RotateCw, ZoomIn, Loader2, PlayCircle, Clock, FileText, Brain, Upload, RotateCcw } from 'lucide-react';
+import { X, AlertCircle, CheckCircle, RotateCw, ZoomIn, Loader2, PlayCircle, Clock, FileText, Brain, Upload, RotateCcw, AlertTriangle } from 'lucide-react';
 import { BatchItem } from '../../types';
 import { Button } from '../ui/Button';
 
@@ -8,11 +8,12 @@ interface FileCardProps {
   onRemove: (id: string) => void;
   onUpdateData: (id: string, field: keyof BatchItem['data'], value: string) => void;
   onRetry: (id: string) => void;
+  onConfirm?: (id: string) => void; // New prop for manual confirmation
   onZoom: (url: string) => void;
   onRotate: (id: string) => void;
 }
 
-export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData, onRetry, onZoom, onRotate }) => {
+export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData, onRetry, onConfirm, onZoom, onRotate }) => {
   // 1. Determine State
   const isActiveProcessing = 
     item.status === 'processing_image' || 
@@ -22,27 +23,30 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
   const isQueued = item.status === 'queued';
   const isSuccess = item.status === 'success';
   const isError = item.status === 'error';
+  // 'ready' means waiting for review/confirmation
+  const isReviewNeeded = item.status === 'ready'; 
   
   // Data Validation - NOW INCLUDES SERIE
   const isDataIncomplete = !item.data.numeroDoc || !item.data.dataEmissao || !item.data.serie;
   const isSuspiciousRead = item.data.numeroDoc.length > 0 && item.data.numeroDoc.length < 3;
   const isAIWarning = item.status === 'ready' && (isDataIncomplete || isSuspiciousRead);
 
-  const isProblematic = isError || isAIWarning;
-  const isReadyAndValid = item.status === 'ready' && !isProblematic;
-  const isGreenState = isSuccess || isReadyAndValid;
+  const isProblematic = isError; // We separate 'Review' from 'Error' visually
 
   // 3. Dynamic Styles
   let cardStyleClass = 'bg-white dark:bg-brand-dark/40 border-gray-200 dark:border-gray-700 border'; // Default
 
   if (isProblematic) {
     cardStyleClass = 'bg-red-50 dark:bg-red-900/20 border-red-500 border-2';
+  } else if (isReviewNeeded) {
+    // ORANGE / AMBER Style for Review
+    cardStyleClass = 'bg-orange-50 dark:bg-orange-900/10 border-orange-400 border-2';
   } else if (isActiveProcessing) {
     cardStyleClass = 'bg-blue-50 dark:bg-blue-900/20 border-blue-400 border-2 shadow-md scale-[1.01] z-10';
   } else if (isQueued) {
     // YELLOW STYLE FOR QUEUE
     cardStyleClass = 'bg-yellow-50 dark:bg-yellow-900/10 border-yellow-400 border-2 border-dashed';
-  } else if (isGreenState) {
+  } else if (isSuccess) {
     cardStyleClass = 'bg-green-50 dark:bg-green-900/20 border-green-500 border-2';
   }
 
@@ -68,6 +72,9 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
   } else if (isError) {
       statusText = item.errorMessage || "Erro no Processamento";
       statusIcon = <AlertCircle size={14} className="text-red-600" />;
+  } else if (isReviewNeeded) {
+      statusText = "Confirme os Dados";
+      statusIcon = <AlertTriangle size={14} className="text-orange-500" />;
   }
 
   // Show manual hint if it's an error OR if it's queued/waiting
@@ -75,6 +82,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
   const showRetryAsUpload = (isError || isQueued) && !isDataIncomplete;
 
   // Allow editing unless it's actively processing or successfully finished
+  // Review state IS editable
   const allowEditing = !isSuccess && !isActiveProcessing;
 
   // --- HANDLER FOR DATE MASKING ---
@@ -145,8 +153,8 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
           {/* Status Badge Overlays */}
           <div className="absolute top-1 right-1 z-20 pointer-events-none">
              {isSuccess && <div className="bg-green-500 text-white p-1 rounded-full shadow-md"><CheckCircle size={14} /></div>}
-             {isReadyAndValid && <div className="bg-green-500 text-white p-1 rounded-full shadow-md"><PlayCircle size={14} /></div>}
              {isProblematic && <div className="bg-red-500 text-white p-1 rounded-full shadow-md"><AlertCircle size={14} /></div>}
+             {isReviewNeeded && <div className="bg-orange-500 text-white p-1 rounded-full shadow-md"><AlertTriangle size={14} /></div>}
              {isActiveProcessing && (
                 <div className="bg-blue-500 text-white p-1 rounded-full shadow-md">
                     <Loader2 size={14} className="animate-spin"/>
@@ -175,6 +183,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                         isError ? 'text-red-700' : 
                         isSuccess ? 'text-green-700' : 
                         isActiveProcessing ? 'text-blue-600' :
+                        isReviewNeeded ? 'text-orange-600' :
                         isQueued ? 'text-yellow-700 dark:text-yellow-500' : 'text-gray-600'
                     }`}>
                         {statusText}
@@ -208,7 +217,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                   inputMode="numeric"
                   pattern="[0-9]*"
                   className={`w-full h-8 text-lg font-bold bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
-                     ${isProblematic && !item.data.numeroDoc 
+                     ${(isProblematic || (isReviewNeeded && !item.data.numeroDoc))
                         ? 'border-red-400 text-red-700 placeholder-red-300' 
                         : 'border-gray-300 text-brand-primary focus:border-brand-primary'}
                      ${!allowEditing ? 'opacity-50' : ''}
@@ -227,7 +236,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                   inputMode="numeric"
                   pattern="[0-9]*"
                   className={`w-full h-8 text-base text-gray-700 dark:text-gray-300 bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
-                     ${isProblematic && !item.data.serie
+                     ${(isProblematic || (isReviewNeeded && !item.data.serie))
                         ? 'border-red-400 text-red-700 placeholder-red-300' 
                         : 'border-gray-300 focus:border-brand-primary'}
                      ${!allowEditing ? 'opacity-50' : ''}
@@ -247,7 +256,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                   maxLength={10}
                   inputMode="numeric"
                   className={`w-full h-8 text-sm bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
-                      ${isProblematic && !item.data.dataEmissao 
+                      ${(isProblematic || (isReviewNeeded && !item.data.dataEmissao))
                         ? 'border-red-400 text-red-700 placeholder-red-300' 
                         : 'border-gray-300 text-gray-700 dark:text-gray-300 focus:border-brand-primary'}
                       ${!allowEditing ? 'opacity-50' : ''}
@@ -255,20 +264,34 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                 />
           </div>
 
-          {/* Retry / Manual Upload Button */}
-          {isError && (
-            <Button 
-                variant={showRetryAsUpload ? "primary" : "outline"}
-                onClick={() => onRetry(item.id)} 
-                className={`h-9 text-xs w-full mt-2 ${showRetryAsUpload ? 'bg-brand-primary text-white' : 'border-red-300 text-red-700 hover:bg-red-100 bg-white/50'}`}
-            >
-                {showRetryAsUpload ? (
-                    <><Upload size={12} className="mr-2" /> Enviar Manualmente</>
-                ) : (
-                    <><RotateCw size={12} className="mr-2" /> Tentar Novamente com IA</>
-                )}
-            </Button>
-          )}
+          {/* Action Buttons */}
+          <div className="mt-2 flex gap-2">
+            {/* Confirm Button for Review State */}
+            {isReviewNeeded && onConfirm && (
+                <Button 
+                    variant="primary"
+                    onClick={() => onConfirm(item.id)}
+                    className="h-9 text-xs w-full bg-orange-500 hover:bg-orange-600 text-white animate-in zoom-in duration-200"
+                >
+                    <CheckCircle size={14} className="mr-2" /> Confirmar e Enviar
+                </Button>
+            )}
+
+            {/* Retry Button for Error State */}
+            {isError && (
+                <Button 
+                    variant={showRetryAsUpload ? "primary" : "outline"}
+                    onClick={() => onRetry(item.id)} 
+                    className={`h-9 text-xs w-full ${showRetryAsUpload ? 'bg-brand-primary text-white' : 'border-red-300 text-red-700 hover:bg-red-100 bg-white/50'}`}
+                >
+                    {showRetryAsUpload ? (
+                        <><Upload size={12} className="mr-2" /> Enviar Manualmente</>
+                    ) : (
+                        <><RotateCw size={12} className="mr-2" /> Tentar Novamente com IA</>
+                    )}
+                </Button>
+            )}
+          </div>
         </div>
       </div>
     </div>
