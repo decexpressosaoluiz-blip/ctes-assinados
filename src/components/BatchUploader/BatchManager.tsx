@@ -160,6 +160,13 @@ export const BatchManager: React.FC = () => {
             continue;
         }
 
+        // --- PAUSE CHECK ---
+        // If the user paused this specific item while the queue was running, we skip it
+        if (currentItem.status === 'paused') {
+            console.log(`Skipping paused item: ${id}`);
+            continue;
+        }
+
         try {
             setStatusMessage(`Processando item ${i + 1}/${total}: Otimizando imagem...`);
             updateItemStatus(id, 'processing_image');
@@ -339,6 +346,15 @@ export const BatchManager: React.FC = () => {
       }));
   };
 
+  const handleTogglePause = (id: string) => {
+     setItems(prev => prev.map(i => {
+         if (i.id !== id) return i;
+         if (i.status === 'queued') return { ...i, status: 'paused' };
+         if (i.status === 'paused') return { ...i, status: 'queued' };
+         return i;
+     }));
+  };
+
   // NEW: Handle Manual Confirmation/Upload
   const handleConfirmUpload = async (id: string) => {
      // Get fresh item data
@@ -480,8 +496,9 @@ export const BatchManager: React.FC = () => {
                 onRemove={handleRemove}
                 onUpdateData={handleUpdateData}
                 onRetry={handleRetry}
-                onConfirm={handleConfirmUpload} // Pass confirmation handler
+                onConfirm={handleConfirmUpload} 
                 onRotate={handleRotate}
+                onTogglePause={handleTogglePause} // NEW
                 onZoom={(url) => setZoomState({ url, rotation: item.rotation || 0 })}
             />
          ))}

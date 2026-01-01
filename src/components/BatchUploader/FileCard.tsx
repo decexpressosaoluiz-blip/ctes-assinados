@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, AlertCircle, CheckCircle, RotateCw, ZoomIn, Loader2, PlayCircle, Clock, FileText, Brain, Upload, RotateCcw, AlertTriangle } from 'lucide-react';
+import { X, AlertCircle, CheckCircle, RotateCw, ZoomIn, Loader2, PlayCircle, Clock, FileText, Brain, Upload, RotateCcw, AlertTriangle, PauseCircle } from 'lucide-react';
 import { BatchItem } from '../../types';
 import { Button } from '../ui/Button';
 
@@ -8,12 +8,13 @@ interface FileCardProps {
   onRemove: (id: string) => void;
   onUpdateData: (id: string, field: keyof BatchItem['data'], value: string) => void;
   onRetry: (id: string) => void;
-  onConfirm?: (id: string) => void; // New prop for manual confirmation
+  onConfirm?: (id: string) => void; 
   onZoom: (url: string) => void;
   onRotate: (id: string) => void;
+  onTogglePause?: (id: string) => void;
 }
 
-export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData, onRetry, onConfirm, onZoom, onRotate }) => {
+export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData, onRetry, onConfirm, onZoom, onRotate, onTogglePause }) => {
   // 1. Determine State
   const isActiveProcessing = 
     item.status === 'processing_image' || 
@@ -21,17 +22,15 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
     item.status === 'uploading';
 
   const isQueued = item.status === 'queued';
+  const isPaused = item.status === 'paused';
   const isSuccess = item.status === 'success';
   const isError = item.status === 'error';
   // 'ready' means waiting for review/confirmation
   const isReviewNeeded = item.status === 'ready'; 
   
-  // Data Validation - NOW INCLUDES SERIE
+  // Data Validation
   const isDataIncomplete = !item.data.numeroDoc || !item.data.dataEmissao || !item.data.serie;
-  const isSuspiciousRead = item.data.numeroDoc.length > 0 && item.data.numeroDoc.length < 3;
-  const isAIWarning = item.status === 'ready' && (isDataIncomplete || isSuspiciousRead);
-
-  const isProblematic = isError; // We separate 'Review' from 'Error' visually
+  const isProblematic = isError;
 
   // 3. Dynamic Styles
   let cardStyleClass = 'bg-white dark:bg-brand-dark/40 border-gray-200 dark:border-gray-700 border'; // Default
@@ -39,13 +38,13 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
   if (isProblematic) {
     cardStyleClass = 'bg-red-50 dark:bg-red-900/20 border-red-500 border-2';
   } else if (isReviewNeeded) {
-    // ORANGE / AMBER Style for Review
     cardStyleClass = 'bg-orange-50 dark:bg-orange-900/10 border-orange-400 border-2';
   } else if (isActiveProcessing) {
     cardStyleClass = 'bg-blue-50 dark:bg-blue-900/20 border-blue-400 border-2 shadow-md scale-[1.01] z-10';
   } else if (isQueued) {
-    // YELLOW STYLE FOR QUEUE
     cardStyleClass = 'bg-yellow-50 dark:bg-yellow-900/10 border-yellow-400 border-2 border-dashed';
+  } else if (isPaused) {
+    cardStyleClass = 'bg-gray-100 dark:bg-gray-800 border-gray-300 dark:border-gray-600 border opacity-80';
   } else if (isSuccess) {
     cardStyleClass = 'bg-green-50 dark:bg-green-900/20 border-green-500 border-2';
   }
@@ -57,6 +56,9 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
   if (item.status === 'queued') {
       statusText = "Na Fila (Aguardando)";
       statusIcon = <Clock size={14} className="text-yellow-600 dark:text-yellow-500" />;
+  } else if (item.status === 'paused') {
+      statusText = "Pausado";
+      statusIcon = <PauseCircle size={14} className="text-gray-500" />;
   } else if (item.status === 'processing_image') {
       statusText = "Otimizando Imagem...";
       statusIcon = <Loader2 size={14} className="animate-spin text-blue-500" />;
@@ -77,28 +79,18 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
       statusIcon = <AlertTriangle size={14} className="text-orange-500" />;
   }
 
-  // Show manual hint if it's an error OR if it's queued/waiting
-  const showManualHint = (isError || isQueued) && isDataIncomplete;
   const showRetryAsUpload = (isError || isQueued) && !isDataIncomplete;
-
-  // Allow editing unless it's actively processing or successfully finished
-  // Review state IS editable
   const allowEditing = !isSuccess && !isActiveProcessing;
-
-  // --- HANDLER FOR DATE MASKING ---
+  
+  // Handler for Date Masking
   const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    let v = e.target.value.replace(/\D/g, ''); // Remove everything that isn't a number
-    
-    // Limit to 8 digits (DDMMAAAA)
+    let v = e.target.value.replace(/\D/g, '');
     if (v.length > 8) v = v.slice(0, 8);
-
-    // Apply Mask DD/MM/AAAA
     if (v.length >= 5) {
         v = `${v.slice(0, 2)}/${v.slice(2, 4)}/${v.slice(4)}`;
     } else if (v.length >= 3) {
         v = `${v.slice(0, 2)}/${v.slice(2)}`;
     }
-    
     onUpdateData(item.id, 'dataEmissao', v);
   };
   
@@ -107,7 +99,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
   return (
     <div className={`relative rounded-xl transition-all duration-300 overflow-hidden shadow-sm ${cardStyleClass}`}>
       
-      {/* Progress Bar for active item */}
+      {/* Progress Bar */}
       {isActiveProcessing && (
          <div className="absolute top-0 left-0 h-1 bg-blue-500 transition-all duration-300 z-10 w-full overflow-hidden">
             <div className="absolute top-0 left-0 h-full w-full bg-white/50 animate-indeterminate-bar"></div>
@@ -125,18 +117,28 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                 style={{ 
                     transform: `rotate(${item.rotation || 0}deg)`
                 }}
-                className={`w-full h-full object-contain transition-all duration-300 ${isQueued ? 'opacity-80' : 'opacity-100'}`} 
+                className={`w-full h-full object-contain transition-all duration-300 ${isQueued || isPaused ? 'opacity-80' : 'opacity-100'}`} 
               />
               
-              {/* Overlay Actions */}
-              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 z-10">
-                 <button onClick={() => onZoom(item.previewUrl!)} className="text-white p-2 hover:scale-110 transition-transform bg-white/20 rounded-full" title="Ver Fullscreen">
-                    <ZoomIn size={18} />
+              {/* PERMANENT OVERLAY ACTIONS (No Hover Required) */}
+              <div className="absolute bottom-1 right-1 left-1 flex justify-center gap-2 z-20">
+                 {/* Zoom Button */}
+                 <button 
+                    onClick={(e) => { e.stopPropagation(); onZoom(item.previewUrl!); }} 
+                    className="bg-black/40 text-white p-1.5 rounded-full hover:bg-black/60 backdrop-blur-sm transition-colors border border-white/10" 
+                    title="Ver Fullscreen"
+                 >
+                    <ZoomIn size={14} />
                  </button>
                  
+                 {/* Rotate Button */}
                  {allowEditing && (
-                    <button onClick={() => onRotate(item.id)} className="text-white p-2 hover:scale-110 transition-transform bg-white/20 rounded-full" title="Girar Anti-horário">
-                       <RotateCcw size={18} />
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); onRotate(item.id); }} 
+                        className="bg-black/40 text-white p-1.5 rounded-full hover:bg-black/60 backdrop-blur-sm transition-colors border border-white/10" 
+                        title="Girar Anti-horário"
+                    >
+                       <RotateCcw size={14} />
                     </button>
                  )}
               </div>
@@ -165,13 +167,18 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                      <Clock size={14} />
                  </div>
              )}
+             {isPaused && (
+                 <div className="bg-gray-500 text-white p-1 rounded-full shadow-md">
+                     <PauseCircle size={14} />
+                 </div>
+             )}
           </div>
         </div>
 
         {/* Form Inputs Section */}
         <div className="flex-1 space-y-2 min-w-0">
           
-          {/* Header Row: Filename & Remove Button */}
+          {/* Header Row */}
           <div className="flex justify-between items-start">
              <div className="flex flex-col w-full">
                 <h4 className="text-xs font-mono text-gray-500 truncate max-w-[200px] mb-1">{item.file.name}</h4>
@@ -184,29 +191,42 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                         isSuccess ? 'text-green-700' : 
                         isActiveProcessing ? 'text-blue-600' :
                         isReviewNeeded ? 'text-orange-600' :
+                        isPaused ? 'text-gray-500' :
                         isQueued ? 'text-yellow-700 dark:text-yellow-500' : 'text-gray-600'
                     }`}>
                         {statusText}
                     </span>
                 </div>
-                {/* Manual hint if data missing */}
+                {/* Manual hint */}
                 {isError && !showRetryAsUpload && (
                    <div className="text-[10px] text-red-500 mt-0.5 leading-tight">
-                      Preencha todos os campos (CTE, Série e Data).
+                      Preencha todos os campos.
                    </div>
                 )}
              </div>
              
-             {!isActiveProcessing && !isSuccess && (
-               <button onClick={() => onRemove(item.id)} className="text-gray-400 hover:text-red-500 p-1 -mt-1 -mr-1">
-                 <X size={18} />
-               </button>
-             )}
+             <div className="flex items-center gap-1 -mt-1 -mr-1">
+                 {/* Pause/Resume Button */}
+                 {onTogglePause && (isQueued || isPaused) && (
+                     <button 
+                        onClick={() => onTogglePause(item.id)} 
+                        className={`p-1.5 rounded-lg transition-colors ${isPaused ? 'bg-green-100 text-green-600 hover:bg-green-200' : 'text-gray-400 hover:text-orange-500 hover:bg-orange-50'}`}
+                        title={isPaused ? "Retomar" : "Pausar este item"}
+                     >
+                        {isPaused ? <PlayCircle size={18} /> : <PauseCircle size={18} />}
+                     </button>
+                 )}
+                 
+                 {!isActiveProcessing && !isSuccess && (
+                    <button onClick={() => onRemove(item.id)} className="text-gray-400 hover:text-red-500 p-1.5 hover:bg-red-50 rounded-lg transition-colors">
+                        <X size={18} />
+                    </button>
+                 )}
+             </div>
           </div>
 
           {/* Inputs Grid */}
           <div className="grid grid-cols-[2fr_1fr] gap-3 items-end">
-            {/* Numero Input */}
             <div>
                 <input
                   type="text"
@@ -225,7 +245,6 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                 />
             </div>
             
-            {/* Serie Input */}
              <div>
                 <input
                   type="text"
@@ -266,7 +285,6 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
 
           {/* Action Buttons */}
           <div className="mt-2 flex gap-2">
-            {/* Confirm Button for Review State */}
             {isReviewNeeded && onConfirm && (
                 <Button 
                     variant="primary"
@@ -277,7 +295,6 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                 </Button>
             )}
 
-            {/* Retry Button for Error State */}
             {isError && (
                 <Button 
                     variant={showRetryAsUpload ? "primary" : "outline"}

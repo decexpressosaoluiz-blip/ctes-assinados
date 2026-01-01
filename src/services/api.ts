@@ -29,7 +29,8 @@ export const extractDataFromImage = async (base64Image: string): Promise<Extract
 
     1. NÚMERO DO DOCUMENTO:
        - Localize "NÚMERO" ou "Nº".
-       - Formato: Dígitos sequenciais. Remova zeros à esquerda.
+       - Formato: APENAS NÚMEROS. NÃO USE PONTOS (Ex: 126905, não 126.905).
+       - Remova zeros à esquerda.
        
     2. DATA DE EMISSÃO:
        - Formato: DD/MM/AAAA.
@@ -89,7 +90,19 @@ export const extractDataFromImage = async (base64Image: string): Promise<Extract
       // Robust JSON Parsing: Strip Markdown blocks if present
       const cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
       
-      return JSON.parse(cleanText) as ExtractedData;
+      const parsedData = JSON.parse(cleanText) as ExtractedData;
+
+      // --- CRITICAL FIX: FORCE SANITIZATION ---
+      // Ensure no dots, no non-digits, no leading zeros in Number and Serie
+      if (parsedData.numeroDoc) {
+        parsedData.numeroDoc = parsedData.numeroDoc.replace(/\D/g, '').replace(/^0+/, '');
+      }
+      if (parsedData.serie) {
+        parsedData.serie = parsedData.serie.replace(/\D/g, '').replace(/^0+/, '');
+      }
+      // ----------------------------------------
+
+      return parsedData;
 
     } catch (error: any) {
       // Robust Error Parsing: Convert everything to string to catch nested JSON errors
