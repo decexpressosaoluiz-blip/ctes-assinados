@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { UploadCloud, Plus, Trash2, AlertTriangle, CheckCircle, Play, FileInput, StopCircle, Clock } from 'lucide-react';
+import { UploadCloud, Plus, Trash2, AlertTriangle, CheckCircle, Play, FileInput, StopCircle, Clock, Upload, ScanEye } from 'lucide-react';
 import { processImage } from '../../lib/imageProcessor';
 import { extractDataFromImage, uploadToDrive } from '../../services/api';
 import { BatchItem, ExtractedData } from '../../types';
@@ -8,84 +8,76 @@ import { ImageZoomModal } from './ImageZoomModal';
 import { Button } from '../ui/Button';
 import { convertPdfToJpeg } from '../../utils/pdfConverter';
 
-const MAX_BATCH_SIZE = 150; // Increased for large batches
-const SAFETY_DELAY_MS = 15000; // 15 Seconds Safety Brake
+const MAX_BATCH_SIZE = 150; 
+const AI_DELAY_MS = 2000; // Delay to respect Free Tier limits (approx 30 req/min safety)
 
 export const BatchManager: React.FC = () => {
   const [items, setItems] = useState<BatchItem[]>([]);
-  const [isRunning, setIsRunning] = useState(false);
-  const [currentIdx, setCurrentIdx] = useState<number>(-1);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [zoomState, setZoomState] = useState<{url: string, rotation: number} | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<boolean>(false);
-  
-  // CRITICAL FIX: Keep a ref of items to access fresh state inside async loops
   const itemsRef = useRef<BatchItem[]>([]);
+
+  // Sync Ref
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
 
+  // --- STATS ---
+  const successCount = items.filter(i => i.status === 'success').length;
+  const errorCount = items.filter(i => i.status === 'error').length;
+  const queuedCount = items.filter(i => i.status === 'queued').length;
+  const readyCount = items.filter(i => i.status === 'ready').length; // Analyzed, waiting upload
+  const isBusy = isAnalyzing || isUploading;
+
   // --- BACKGROUND PDF PREVIEW GENERATOR ---
   useEffect(() => {
     const generateNextPreview = async () => {
-        // Find the first PDF that has NO previewUrl and is NOT currently being processed by this effect (implicitly)
         const itemNeedsPreview = items.find(i => !i.previewUrl && i.file.type === 'application/pdf');
-
         if (itemNeedsPreview) {
             try {
-                // console.log("Generating preview for PDF:", itemNeedsPreview.file.name);
                 const jpegFile = await convertPdfToJpeg(itemNeedsPreview.file);
                 const previewUrl = URL.createObjectURL(jpegFile);
-
                 setItems(prev => prev.map(i => i.id === itemNeedsPreview.id ? { ...i, previewUrl } : i));
             } catch (err) {
-                console.error("Failed to generate preview for", itemNeedsPreview.file.name, err);
-                // Mark as failed preview so we don't loop forever
+                console.error("Failed to generate preview", err);
                 setItems(prev => prev.map(i => i.id === itemNeedsPreview.id ? { ...i, previewUrl: 'error' } : i));
             }
         }
     };
-    
-    // Small timeout to not block UI thread immediately
     const timer = setTimeout(generateNextPreview, 100);
     return () => clearTimeout(timer);
   }, [items]);
 
-
-  // Stats
-  const successCount = items.filter(i => i.status === 'success').length;
-  const errorCount = items.filter(i => i.status === 'error').length;
-  const queuedCount = items.filter(i => i.status === 'queued').length;
-
-  // Prevent closing tab while running
+  // Prevent closing tab
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (isRunning) {
+      if (isBusy) {
         e.preventDefault();
         e.returnValue = '';
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isRunning]);
+  }, [isBusy]);
 
-  // Clean up ObjectURLs ONLY on unmount to prevent premature revocation causing broken images
+  // Cleanup
   useEffect(() => {
     return () => {
       itemsRef.current.forEach(item => {
-        if (item.previewUrl && item.previewUrl.startsWith('blob:') && item.previewUrl !== 'error') {
+        if (item.previewUrl?.startsWith('blob:') && item.previewUrl !== 'error') {
           URL.revokeObjectURL(item.previewUrl);
         }
       });
     };
   }, []);
 
-  // 1. Lazy File Selection (Low Memory Usage + Instant Preview)
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
-
     const filesArray: File[] = Array.from(e.target.files);
     
     if (items.length + filesArray.length > MAX_BATCH_SIZE) {
@@ -94,19 +86,15 @@ export const BatchManager: React.FC = () => {
     }
 
     const newItems: BatchItem[] = filesArray.map(file => {
-      // INSTANT PREVIEW for Images
       let instantPreview = undefined;
       if (file.type.startsWith('image/')) {
         instantPreview = URL.createObjectURL(file);
       }
-      // For PDFs, we leave undefined. The useEffect above will catch it.
-
       return {
         id: crypto.randomUUID(),
         file,
         previewUrl: instantPreview, 
-        // AUTO-ROTATION: Start at 270 (90 deg counter-clockwise)
-        rotation: 270,
+        rotation: 270, // Default rotation
         data: { numeroDoc: '', serie: '', dataEmissao: '' },
         status: 'queued'
       };
@@ -114,219 +102,191 @@ export const BatchManager: React.FC = () => {
 
     setItems(prev => [...prev, ...newItems]);
     if (fileInputRef.current) fileInputRef.current.value = '';
-
-    // AUTO START QUEUE IF NOT RUNNING
-    // Use a small timeout to let state settle/refs update via useEffect
+    
+    // Auto-start analysis if not busy
     setTimeout(() => {
-        if (!abortRef.current && !isRunning) {
-            startQueue();
+        if (!abortRef.current && !isBusy) {
+            startAnalysisQueue();
         }
     }, 500);
   };
 
-  // 2. The Robust Sequential Loop
-  const startQueue = async () => {
-    // If already running, do nothing (prevent double clicks)
-    // Note: We access the STATE isRunning here, but inside loop we check abortRef too
-    if (isRunning) return;
+  // --- CORE: ANALYSIS QUEUE (Image -> AI -> Ready) ---
+  const startAnalysisQueue = async () => {
+    if (isBusy) return;
     
-    setIsRunning(true);
+    setIsAnalyzing(true);
     abortRef.current = false;
-    setStatusMessage("Iniciando fila de processamento...");
+    setStatusMessage("Iniciando análise...");
 
-    // Get IDs to process (snapshot at start)
-    // We re-read itemsRef here because this function might be called via setTimeout
+    // Get items that need processing (Queued or Error)
     const queueIds = itemsRef.current
         .filter(i => i.status === 'queued' || i.status === 'error')
         .map(i => i.id);
 
-    let processedCount = 0;
     const total = queueIds.length;
 
     for (let i = 0; i < total; i++) {
         if (abortRef.current) {
-            setStatusMessage("Processamento pausado pelo usuário.");
+            setStatusMessage("Análise pausada.");
             break;
         }
 
         const id = queueIds[i];
-        setCurrentIdx(i + 1);
         
-        // CRITICAL FIX: Read from REF to get the absolute latest state (including manual typing)
+        // Check Status (User might have paused SPECIFIC item mid-loop)
         const currentItem = itemsRef.current.find(item => item.id === id);
-
-        if (!currentItem) {
-            console.warn("Item not found in ref, skipping:", id);
-            continue;
-        }
-
-        // --- PAUSE CHECK ---
-        // If the user paused this specific item while the queue was running, we skip it
-        if (currentItem.status === 'paused') {
-            console.log(`Skipping paused item: ${id}`);
+        if (!currentItem || currentItem.status === 'paused') {
             continue;
         }
 
         try {
-            setStatusMessage(`Processando item ${i + 1}/${total}: Otimizando imagem...`);
+            // 1. Otimização de Imagem
+            setStatusMessage(`Item ${i + 1}/${total}: Otimizando imagem...`);
             updateItemStatus(id, 'processing_image');
             
-            // --- STEP A: PREPARE IMAGE ---
             let fileToProcess = currentItem.file;
-            
             if (fileToProcess.type === 'application/pdf') {
                 try {
                     fileToProcess = await convertPdfToJpeg(fileToProcess);
-                } catch (pdfErr) {
-                    throw new Error("Falha ao converter PDF.");
-                }
+                } catch (e) { throw new Error("Erro conv. PDF"); }
             }
 
-            // Resize/Compress + ROTATE based on user selection
             const processed = await processImage(fileToProcess, currentItem.rotation || 0);
             
-            // Cleanup previous blob if exists before overwriting with Data URL
-            if (currentItem.previewUrl?.startsWith('blob:')) {
-                URL.revokeObjectURL(currentItem.previewUrl);
-            }
+            // Revoke old blob to save memory
+            if (currentItem.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(currentItem.previewUrl);
 
-            // Save base64 to state
+            // Update State with Processed Image
             setItems(prev => prev.map(item => item.id === id ? {
                 ...item,
                 base64: processed.base64,
-                // We update preview URL here to the "processed" one (which is rotated/cropped)
-                // This gives feedback that processing worked
-                previewUrl: processed.previewUrl, 
-                // Reset rotation to 0 visually because the image itself is now rotated
-                rotation: 0 
+                previewUrl: processed.previewUrl,
+                rotation: 0 // Reset visual rotation since image is baked
             } : item));
 
-            // --- STEP B: CHECK FOR MANUAL OVERRIDE (QUOTA FALLBACK) ---
-            // Use currentItem from REF to ensure we see what user typed 1ms ago
-            // NOW MANDATORY: Numero, Serie, AND Data must be present.
+            // --- PAUSE CHECK POINT ---
+            // Check if user paused THIS item while image was processing
+            const freshItem = itemsRef.current.find(x => x.id === id);
+            if (freshItem?.status === 'paused' || abortRef.current) {
+                 updateItemStatus(id, 'paused'); // Ensure it stays paused
+                 continue;
+            }
+
+            // 2. AI Analysis
             const isManualDataFilled = currentItem.data.numeroDoc && currentItem.data.dataEmissao && currentItem.data.serie;
-            
             let extractedData = currentItem.data;
-            let needsReview = false;
 
             if (!isManualDataFilled) {
-                // Normal Flow: Use AI
-                setStatusMessage(`Processando item ${i + 1}/${total}: Analisando com IA...`);
+                setStatusMessage(`Item ${i + 1}/${total}: Lendo com IA...`);
                 updateItemStatus(id, 'analyzing_ai');
 
+                // Artificial Delay for Rate Limiting
+                if (i > 0) await new Promise(r => setTimeout(r, AI_DELAY_MS));
+
                 extractedData = await extractDataFromImage(processed.base64);
-
-                // Update state with AI result
-                setItems(prev => prev.map(item => item.id === id ? {
-                    ...item,
-                    data: extractedData
-                } : item));
-
-                // CHECK CONFIDENCE
-                // If AI flagged as needsReview OR if critical fields are empty
-                if (extractedData.needsReview || !extractedData.numeroDoc || !extractedData.serie || !extractedData.dataEmissao) {
-                    needsReview = true;
-                }
-
-            } else {
-                // Fallback Flow: Skip AI
-                setStatusMessage(`Item ${i + 1}/${total}: Dados manuais detectados (Sem IA). Preparando...`);
-                await new Promise(r => setTimeout(r, 400));
             }
 
-            // --- STEP B.5: PAUSE FOR REVIEW IF NEEDED ---
-            if (needsReview) {
-                setStatusMessage(`Item ${i + 1}/${total}: Revisão necessária. Aguardando usuário.`);
-                // Set status to 'ready' (Waiting for Confirmation)
-                // Set error message as a "Warning"
-                setItems(prev => prev.map(item => item.id === id ? {
-                    ...item,
-                    status: 'ready',
-                    errorMessage: "Confirme os dados antes do envio.",
-                    // Do NOT clear base64 yet, user might need it if we re-implement re-upload logic, 
-                    // though for now we are just confirming data.
-                } : item));
-                
-                // Continue the loop to process other items, effectively skipping upload for this one
-                continue; 
-            }
-
-            // --- STEP C: AUTO UPLOAD ---
-            setStatusMessage(`Processando item ${i + 1}/${total}: Enviando para o Drive...`);
-            updateItemStatus(id, 'uploading');
-
-            const [dia, mes, ano] = extractedData.dataEmissao.includes('/') 
-                ? extractedData.dataEmissao.split('/') 
-                : ['', '', ''];
-
-            await uploadToDrive({
-                ano: ano || '2025',
-                mes: mes || '01',
-                dia: dia || '01',
-                serie: extractedData.serie || 'N/A',
-                numeroDoc: extractedData.numeroDoc,
-                mimeType: 'image/jpeg',
-                imagemBase64: processed.base64
-            });
-
-            // --- STEP D: SUCCESS & CLEANUP ---
+            // 3. Mark as READY (Orange) - DO NOT UPLOAD YET
             setItems(prev => prev.map(item => item.id === id ? {
                 ...item,
-                status: 'success',
-                base64: undefined, // CLEAR RAM
+                status: 'ready', // Orange State
+                data: extractedData,
                 errorMessage: undefined
             } : item));
 
-            processedCount++;
-
-            // --- STEP E: SAFETY BRAKE ---
-            const waitTime = isManualDataFilled ? 2 : 15; 
-            
-            if (i < total - 1) { 
-                for (let s = waitTime; s > 0; s--) {
-                    if (abortRef.current) break;
-                    setStatusMessage(`Sucesso! Aguardando ${s}s...`);
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                }
-            }
-
         } catch (err: any) {
-            console.error(`Error processing item ${id}:`, err);
-            
-            const errorMessage = err.message || "Erro desconhecido";
-            const isQuotaError = errorMessage.toLowerCase().includes("cota") || errorMessage.toLowerCase().includes("quota");
-
+            console.error(`Error analyzing item ${id}:`, err);
             setItems(prev => prev.map(item => item.id === id ? {
                 ...item,
                 status: 'error',
-                errorMessage: isQuotaError ? "Cota Excedida. Preencha Manualmente." : errorMessage,
-                base64: undefined // Clear RAM
+                errorMessage: err.message || "Erro na análise",
             } : item));
-            
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            await new Promise(r => setTimeout(r, 1000));
         }
     }
 
-    setIsRunning(false);
-    setStatusMessage(abortRef.current ? "Fila parada." : "Processamento concluído!");
+    setIsAnalyzing(false);
+    setStatusMessage("Análise concluída. Verifique os dados.");
+  };
+
+  // --- CORE: UPLOAD QUEUE (Ready -> Cloud) ---
+  const handleUploadAllReady = async () => {
+      if (isBusy) return;
+      
+      setIsUploading(true);
+      abortRef.current = false;
+      
+      const readyIds = itemsRef.current
+        .filter(i => i.status === 'ready')
+        .map(i => i.id);
+        
+      const total = readyIds.length;
+      if (total === 0) {
+          setIsUploading(false);
+          return;
+      }
+
+      for (let i = 0; i < total; i++) {
+          if (abortRef.current) break;
+          
+          const id = readyIds[i];
+          const item = itemsRef.current.find(x => x.id === id);
+          if (!item || item.status === 'paused') continue;
+
+          try {
+              setStatusMessage(`Enviando ${i + 1}/${total}: CTE ${item.data.numeroDoc}...`);
+              updateItemStatus(id, 'uploading');
+
+              const [dia, mes, ano] = item.data.dataEmissao.includes('/') 
+                ? item.data.dataEmissao.split('/') 
+                : ['', '', ''];
+
+              await uploadToDrive({
+                ano: ano || '2025',
+                mes: mes || '01',
+                dia: dia || '01',
+                serie: item.data.serie || 'N/A',
+                numeroDoc: item.data.numeroDoc,
+                mimeType: 'image/jpeg',
+                imagemBase64: item.base64 || ''
+              });
+
+              setItems(prev => prev.map(x => x.id === id ? {
+                  ...x,
+                  status: 'success',
+                  base64: undefined, // Clear RAM
+                  errorMessage: undefined,
+                  data: { ...x.data, needsReview: false }
+              } : x));
+
+          } catch (err: any) {
+              setItems(prev => prev.map(x => x.id === id ? {
+                  ...x,
+                  status: 'ready', // Keep ready so they can try again
+                  errorMessage: "Erro no envio. Tente novamente."
+              } : x));
+          }
+      }
+      
+      setIsUploading(false);
+      setStatusMessage("Envio finalizado.");
   };
 
   const stopQueue = () => {
     abortRef.current = true;
-    setStatusMessage("Parando após o item atual...");
+    setStatusMessage("Parando...");
   };
 
   const updateItemStatus = (id: string, status: BatchItem['status']) => {
     setItems(prev => prev.map(i => i.id === id ? { ...i, status } : i));
   };
 
-  // Handlers
+  // --- INDIVIDUAL HANDLERS ---
   const handleRemove = (id: string) => {
     setItems(prev => {
-        const itemToRemove = prev.find(i => i.id === id);
-        if (itemToRemove?.previewUrl?.startsWith('blob:')) {
-            URL.revokeObjectURL(itemToRemove.previewUrl);
-        }
+        const item = prev.find(i => i.id === id);
+        if (item?.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(item.previewUrl);
         return prev.filter(i => i.id !== id);
     });
   };
@@ -338,10 +298,7 @@ export const BatchManager: React.FC = () => {
   const handleRotate = (id: string) => {
       setItems(prev => prev.map(i => {
           if (i.id !== id) return i;
-          const currentRot = i.rotation || 0;
-          // Counter-Clockwise Logic: Add 270 degrees (equiv to -90)
-          // 0 -> 270, 270 -> 180, 180 -> 90, 90 -> 0
-          const newRot = (currentRot + 270) % 360;
+          const newRot = ((i.rotation || 0) + 270) % 360;
           return { ...i, rotation: newRot };
       }));
   };
@@ -349,57 +306,45 @@ export const BatchManager: React.FC = () => {
   const handleTogglePause = (id: string) => {
      setItems(prev => prev.map(i => {
          if (i.id !== id) return i;
+         
+         // If currently processing, force it to 'paused' state immediately
+         // The loop checks for this state between steps
+         if (i.status === 'processing_image' || i.status === 'analyzing_ai') {
+             return { ...i, status: 'paused' };
+         }
+         
          if (i.status === 'queued') return { ...i, status: 'paused' };
          if (i.status === 'paused') return { ...i, status: 'queued' };
          return i;
      }));
   };
 
-  // NEW: Handle Manual Confirmation/Upload
-  const handleConfirmUpload = async (id: string) => {
-     // Get fresh item data
+  const handleSingleUpload = async (id: string) => {
      const item = itemsRef.current.find(i => i.id === id);
      if (!item) return;
 
-     // Simple validation
      if (!item.data.numeroDoc || !item.data.dataEmissao || !item.data.serie) {
-         alert("Preencha todos os campos antes de confirmar.");
+         alert("Preencha todos os campos.");
          return;
      }
 
      updateItemStatus(id, 'uploading');
 
      try {
-         const [dia, mes, ano] = item.data.dataEmissao.includes('/') 
-                ? item.data.dataEmissao.split('/') 
-                : ['', '', ''];
-
+         const [dia, mes, ano] = item.data.dataEmissao.split('/');
          await uploadToDrive({
-                ano: ano || '2025',
-                mes: mes || '01',
-                dia: dia || '01',
+                ano: ano || '2025', mes: mes || '01', dia: dia || '01',
                 serie: item.data.serie || 'N/A',
                 numeroDoc: item.data.numeroDoc,
                 mimeType: 'image/jpeg',
-                // If base64 is gone (cleaned up), we might need to re-process (unlikely in 'ready' state logic above)
-                // But if it is missing, we can't upload. Logic above keeps base64 for 'ready' items.
                 imagemBase64: item.base64 || '' 
          });
-
          setItems(prev => prev.map(i => i.id === id ? {
-             ...i,
-             status: 'success',
-             base64: undefined,
-             errorMessage: undefined,
-             data: { ...i.data, needsReview: false } // Clear flag
+             ...i, status: 'success', base64: undefined, errorMessage: undefined
          } : i));
-
      } catch (err: any) {
          setItems(prev => prev.map(i => i.id === id ? {
-             ...i,
-             status: 'error',
-             errorMessage: err.message || "Erro ao enviar.",
-             // Keep base64 so they can retry
+             ...i, status: 'ready', errorMessage: "Erro ao enviar."
          } : i));
      }
   };
@@ -408,30 +353,20 @@ export const BatchManager: React.FC = () => {
     setItems(prev => {
         const kept = prev.filter(i => i.status !== 'success');
         const removed = prev.filter(i => i.status === 'success');
-        
-        // Technically success items might have previewUrls if we kept them, but usually we clear base64.
-        // If previewUrl is blob, revoke it.
         removed.forEach(item => {
-             if (item.previewUrl?.startsWith('blob:')) {
-                URL.revokeObjectURL(item.previewUrl);
-             }
+             if (item.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(item.previewUrl);
         });
         return kept;
     });
   };
 
   const handleClearQueue = () => {
-    // Instant clear of pending/error items without confirmation dialog
     setItems(prev => {
-        const kept = prev.filter(i => i.status === 'success');
-        const removed = prev.filter(i => i.status !== 'success');
-        
+        const kept = prev.filter(i => i.status === 'success' || i.status === 'ready');
+        const removed = prev.filter(i => i.status !== 'success' && i.status !== 'ready');
         removed.forEach(item => {
-             if (item.previewUrl?.startsWith('blob:')) {
-                URL.revokeObjectURL(item.previewUrl);
-             }
+             if (item.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(item.previewUrl);
         });
-        
         return kept;
     });
   };
@@ -441,25 +376,26 @@ export const BatchManager: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full max-w-2xl mx-auto p-4 space-y-6">
+    <div className="flex flex-col h-full max-w-2xl mx-auto p-4 space-y-6 pb-24">
       {/* Header & Stats */}
       <div className="flex flex-col gap-2">
          <div className="flex justify-between items-end">
             <div>
                 <h1 className="text-2xl font-bold text-brand-primary dark:text-white">Upload em Massa</h1>
                 <p className="text-sm text-gray-500">
-                    Modo Sequencial • Máx {MAX_BATCH_SIZE} arq.
+                    Modo Seguro • Análise primeiro, Envio depois
                 </p>
             </div>
-            <div className="text-right text-xs font-mono bg-gray-100 dark:bg-gray-800 p-2 rounded-lg">
+            <div className="text-right text-xs font-mono bg-gray-100 dark:bg-gray-800 p-2 rounded-lg grid grid-cols-2 gap-x-4 gap-y-1">
                 <div className="text-blue-600 font-bold">Fila: {queuedCount}</div>
+                <div className="text-orange-600 font-bold">Analisados: {readyCount}</div>
                 <div className="text-green-600">Sucesso: {successCount}</div>
                 <div className="text-red-500">Erros: {errorCount}</div>
             </div>
          </div>
 
          {/* Status Banner */}
-         {isRunning && (
+         {isBusy && (
             <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800 p-3 rounded-lg flex items-center gap-3 animate-pulse">
                 <Clock className="text-blue-500 animate-spin-slow" />
                 <span className="text-blue-800 dark:text-blue-200 font-mono text-sm font-bold">
@@ -472,8 +408,8 @@ export const BatchManager: React.FC = () => {
       {/* Empty State */}
       {items.length === 0 && (
         <div 
-            onClick={() => !isRunning && fileInputRef.current?.click()}
-            className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-2xl bg-gray-50 dark:bg-brand-dark/20 min-h-[300px] transition-colors ${isRunning ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-100'}`}
+            onClick={() => !isBusy && fileInputRef.current?.click()}
+            className={`flex-1 flex flex-col items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-2xl bg-gray-50 dark:bg-brand-dark/20 min-h-[300px] transition-colors ${isBusy ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-100'}`}
         >
             <div className="bg-brand-primary/10 p-6 rounded-full mb-4">
                 <UploadCloud className="w-12 h-12 text-brand-primary" />
@@ -496,18 +432,16 @@ export const BatchManager: React.FC = () => {
                 onRemove={handleRemove}
                 onUpdateData={handleUpdateData}
                 onRetry={handleRetry}
-                onConfirm={handleConfirmUpload} 
+                onConfirm={handleSingleUpload} 
                 onRotate={handleRotate}
-                onTogglePause={handleTogglePause} // NEW
+                onTogglePause={handleTogglePause}
                 onZoom={(url) => setZoomState({ url, rotation: item.rotation || 0 })}
             />
          ))}
-         
-         <div className="h-80 w-full shrink-0" aria-hidden="true" />
       </div>
 
-      {/* Actions Footer */}
-      <div className="fixed bottom-16 left-0 right-0 p-4 bg-white/90 dark:bg-brand-deep/90 backdrop-blur-md border-t border-gray-200 dark:border-gray-800 z-10 flex gap-3 justify-center max-w-2xl mx-auto">
+      {/* Actions Footer - STICKY */}
+      <div className="fixed bottom-16 left-0 right-0 p-4 bg-white/95 dark:bg-brand-deep/95 backdrop-blur-md border-t border-gray-200 dark:border-gray-800 z-30 shadow-lg-up flex gap-3 justify-center max-w-2xl mx-auto">
          <input 
             type="file" 
             multiple 
@@ -515,58 +449,63 @@ export const BatchManager: React.FC = () => {
             ref={fileInputRef} 
             onChange={handleFileSelect} 
             className="hidden" 
-            disabled={isRunning}
+            disabled={isBusy}
          />
          
-         {!isRunning && (
+         {!isBusy ? (
             <>
-                {/* Trash Button - Only appears if there are queued or error items */}
+                {/* 1. Add / Remove */}
+                {items.length < MAX_BATCH_SIZE && (
+                    <Button variant="outline" onClick={() => fileInputRef.current?.click()} className="px-3">
+                        <Plus size={20} />
+                    </Button>
+                )}
+                
                 {(queuedCount > 0 || errorCount > 0) && (
-                    <Button 
-                        variant="ghost" 
-                        onClick={handleClearQueue}
-                        className="text-red-500 hover:bg-red-50 hover:text-red-700 border border-transparent hover:border-red-200 px-3 shrink-0"
-                        title="Remover todos os pendentes e erros"
-                    >
+                    <Button variant="ghost" onClick={handleClearQueue} className="text-red-500 px-3">
                         <Trash2 size={24} />
                     </Button>
                 )}
 
-                {items.length < MAX_BATCH_SIZE && (
-                    <Button 
-                        variant="outline" 
-                        onClick={() => fileInputRef.current?.click()}
-                    >
-                        <Plus className="mr-2" size={20} /> Adicionar
-                    </Button>
-                )}
-
+                {/* 2. Analyze Action */}
                 {queuedCount > 0 && (
                     <Button 
                         variant="primary" 
-                        onClick={startQueue}
-                        className="flex-1 max-w-[200px]"
+                        onClick={startAnalysisQueue}
+                        className="flex-1 bg-brand-primary hover:bg-brand-focus"
                     >
-                        <Play className="mr-2" size={20} />
-                        Iniciar Fila ({queuedCount})
+                        <ScanEye className="mr-2" size={20} />
+                        Analisar ({queuedCount})
                     </Button>
                 )}
-                 {successCount > 0 && queuedCount === 0 && (
+
+                {/* 3. Upload Action (Only appears if items are Ready) */}
+                {readyCount > 0 && (
+                    <Button 
+                        variant="primary" 
+                        onClick={handleUploadAllReady}
+                        className="flex-1 bg-orange-500 hover:bg-orange-600 text-white animate-in zoom-in"
+                    >
+                        <Upload className="mr-2" size={20} />
+                        Enviar ({readyCount})
+                    </Button>
+                )}
+
+                {/* 4. Cleanup */}
+                {successCount > 0 && queuedCount === 0 && readyCount === 0 && (
                     <Button variant="secondary" onClick={handleClearFinished}>
                         <CheckCircle className="mr-2" size={20} /> Limpar
                     </Button>
                 )}
             </>
-         )}
-
-         {isRunning && (
+         ) : (
             <Button 
                 variant="secondary" 
                 onClick={stopQueue}
-                className="bg-red-100 text-red-700 hover:bg-red-200 border-red-200"
+                className="bg-red-100 text-red-700 hover:bg-red-200 w-full"
             >
                 <StopCircle className="mr-2" size={20} />
-                Pausar Fila
+                Pausar ({isAnalyzing ? 'Análise' : 'Envio'})
             </Button>
          )}
       </div>

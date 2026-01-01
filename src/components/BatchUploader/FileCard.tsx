@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, AlertCircle, CheckCircle, RotateCw, ZoomIn, Loader2, PlayCircle, Clock, FileText, Brain, Upload, RotateCcw, AlertTriangle, PauseCircle } from 'lucide-react';
+import { X, AlertCircle, CheckCircle, RotateCw, ZoomIn, Loader2, PlayCircle, Clock, FileText, Brain, Upload, RotateCcw, AlertTriangle, PauseCircle, CheckSquare } from 'lucide-react';
 import { BatchItem } from '../../types';
 import { Button } from '../ui/Button';
 
@@ -25,8 +25,8 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
   const isPaused = item.status === 'paused';
   const isSuccess = item.status === 'success';
   const isError = item.status === 'error';
-  // 'ready' means waiting for review/confirmation
-  const isReviewNeeded = item.status === 'ready'; 
+  // 'ready' means Analyzed/Orange
+  const isAnalyzed = item.status === 'ready'; 
   
   // Data Validation
   const isDataIncomplete = !item.data.numeroDoc || !item.data.dataEmissao || !item.data.serie;
@@ -37,8 +37,9 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
 
   if (isProblematic) {
     cardStyleClass = 'bg-red-50 dark:bg-red-900/20 border-red-500 border-2';
-  } else if (isReviewNeeded) {
-    cardStyleClass = 'bg-orange-50 dark:bg-orange-900/10 border-orange-400 border-2';
+  } else if (isAnalyzed) {
+    // ORANGE - READY FOR UPLOAD
+    cardStyleClass = 'bg-orange-50 dark:bg-orange-900/10 border-orange-400 border-2 shadow-sm';
   } else if (isActiveProcessing) {
     cardStyleClass = 'bg-blue-50 dark:bg-blue-900/20 border-blue-400 border-2 shadow-md scale-[1.01] z-10';
   } else if (isQueued) {
@@ -54,7 +55,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
   let statusIcon = null;
 
   if (item.status === 'queued') {
-      statusText = "Na Fila (Aguardando)";
+      statusText = "Aguardando Análise";
       statusIcon = <Clock size={14} className="text-yellow-600 dark:text-yellow-500" />;
   } else if (item.status === 'paused') {
       statusText = "Pausado";
@@ -63,20 +64,20 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
       statusText = "Otimizando Imagem...";
       statusIcon = <Loader2 size={14} className="animate-spin text-blue-500" />;
   } else if (item.status === 'analyzing_ai') {
-      statusText = "Lendo Documento (IA)...";
+      statusText = "Lendo (IA)...";
       statusIcon = <Brain size={14} className="animate-pulse text-purple-500" />;
   } else if (item.status === 'uploading') {
-      statusText = "Enviando para o Drive...";
+      statusText = "Enviando Drive...";
       statusIcon = <Loader2 size={14} className="animate-spin text-yellow-500" />;
   } else if (isSuccess) {
-      statusText = "Concluído";
+      statusText = "Enviado!";
       statusIcon = <CheckCircle size={14} className="text-green-600" />;
   } else if (isError) {
-      statusText = item.errorMessage || "Erro no Processamento";
+      statusText = item.errorMessage || "Erro";
       statusIcon = <AlertCircle size={14} className="text-red-600" />;
-  } else if (isReviewNeeded) {
-      statusText = "Confirme os Dados";
-      statusIcon = <AlertTriangle size={14} className="text-orange-500" />;
+  } else if (isAnalyzed) {
+      statusText = "Analisado - Pronto para envio";
+      statusIcon = <CheckSquare size={14} className="text-orange-500" />;
   }
 
   const showRetryAsUpload = (isError || isQueued) && !isDataIncomplete;
@@ -120,9 +121,8 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                 className={`w-full h-full object-contain transition-all duration-300 ${isQueued || isPaused ? 'opacity-80' : 'opacity-100'}`} 
               />
               
-              {/* PERMANENT OVERLAY ACTIONS (No Hover Required) */}
+              {/* PERMANENT OVERLAY ACTIONS */}
               <div className="absolute bottom-1 right-1 left-1 flex justify-center gap-2 z-20">
-                 {/* Zoom Button */}
                  <button 
                     onClick={(e) => { e.stopPropagation(); onZoom(item.previewUrl!); }} 
                     className="bg-black/40 text-white p-1.5 rounded-full hover:bg-black/60 backdrop-blur-sm transition-colors border border-white/10" 
@@ -131,7 +131,6 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                     <ZoomIn size={14} />
                  </button>
                  
-                 {/* Rotate Button */}
                  {allowEditing && (
                     <button 
                         onClick={(e) => { e.stopPropagation(); onRotate(item.id); }} 
@@ -156,7 +155,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
           <div className="absolute top-1 right-1 z-20 pointer-events-none">
              {isSuccess && <div className="bg-green-500 text-white p-1 rounded-full shadow-md"><CheckCircle size={14} /></div>}
              {isProblematic && <div className="bg-red-500 text-white p-1 rounded-full shadow-md"><AlertCircle size={14} /></div>}
-             {isReviewNeeded && <div className="bg-orange-500 text-white p-1 rounded-full shadow-md"><AlertTriangle size={14} /></div>}
+             {isAnalyzed && <div className="bg-orange-500 text-white p-1 rounded-full shadow-md"><CheckSquare size={14} /></div>}
              {isActiveProcessing && (
                 <div className="bg-blue-500 text-white p-1 rounded-full shadow-md">
                     <Loader2 size={14} className="animate-spin"/>
@@ -190,7 +189,7 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                         isError ? 'text-red-700' : 
                         isSuccess ? 'text-green-700' : 
                         isActiveProcessing ? 'text-blue-600' :
-                        isReviewNeeded ? 'text-orange-600' :
+                        isAnalyzed ? 'text-orange-600' :
                         isPaused ? 'text-gray-500' :
                         isQueued ? 'text-yellow-700 dark:text-yellow-500' : 'text-gray-600'
                     }`}>
@@ -206,8 +205,8 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
              </div>
              
              <div className="flex items-center gap-1 -mt-1 -mr-1">
-                 {/* Pause/Resume Button */}
-                 {onTogglePause && (isQueued || isPaused) && (
+                 {/* Pause/Resume Button - NOW AVAILABLE FOR ACTIVE ITEMS TOO */}
+                 {onTogglePause && !isSuccess && !isError && !isAnalyzed && (
                      <button 
                         onClick={() => onTogglePause(item.id)} 
                         className={`p-1.5 rounded-lg transition-colors ${isPaused ? 'bg-green-100 text-green-600 hover:bg-green-200' : 'text-gray-400 hover:text-orange-500 hover:bg-orange-50'}`}
@@ -233,14 +232,14 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                   placeholder="Ex: 27681"
                   value={item.data.numeroDoc}
                   onChange={(e) => onUpdateData(item.id, 'numeroDoc', e.target.value.replace(/\D/g, ''))}
-                  disabled={!allowEditing}
+                  disabled={!allowEditing && !isAnalyzed} // Allow editing if Analyzed
                   inputMode="numeric"
                   pattern="[0-9]*"
                   className={`w-full h-8 text-lg font-bold bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
-                     ${(isProblematic || (isReviewNeeded && !item.data.numeroDoc))
+                     ${(isProblematic || (isAnalyzed && !item.data.numeroDoc))
                         ? 'border-red-400 text-red-700 placeholder-red-300' 
                         : 'border-gray-300 text-brand-primary focus:border-brand-primary'}
-                     ${!allowEditing ? 'opacity-50' : ''}
+                     ${(!allowEditing && !isAnalyzed) ? 'opacity-50' : ''}
                   `}
                 />
             </div>
@@ -251,14 +250,14 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                   placeholder="Série"
                   value={item.data.serie}
                   onChange={(e) => onUpdateData(item.id, 'serie', e.target.value.replace(/\D/g, ''))}
-                  disabled={!allowEditing}
+                  disabled={!allowEditing && !isAnalyzed}
                   inputMode="numeric"
                   pattern="[0-9]*"
                   className={`w-full h-8 text-base text-gray-700 dark:text-gray-300 bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
-                     ${(isProblematic || (isReviewNeeded && !item.data.serie))
+                     ${(isProblematic || (isAnalyzed && !item.data.serie))
                         ? 'border-red-400 text-red-700 placeholder-red-300' 
                         : 'border-gray-300 focus:border-brand-primary'}
-                     ${!allowEditing ? 'opacity-50' : ''}
+                     ${(!allowEditing && !isAnalyzed) ? 'opacity-50' : ''}
                   `}
                 />
             </div>
@@ -271,27 +270,27 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                   placeholder="DD/MM/AAAA"
                   value={item.data.dataEmissao}
                   onChange={handleDateChange}
-                  disabled={!allowEditing}
+                  disabled={!allowEditing && !isAnalyzed}
                   maxLength={10}
                   inputMode="numeric"
                   className={`w-full h-8 text-sm bg-transparent border-b focus:outline-none placeholder-gray-400 transition-colors
-                      ${(isProblematic || (isReviewNeeded && !item.data.dataEmissao))
+                      ${(isProblematic || (isAnalyzed && !item.data.dataEmissao))
                         ? 'border-red-400 text-red-700 placeholder-red-300' 
                         : 'border-gray-300 text-gray-700 dark:text-gray-300 focus:border-brand-primary'}
-                      ${!allowEditing ? 'opacity-50' : ''}
+                      ${(!allowEditing && !isAnalyzed) ? 'opacity-50' : ''}
                   `}
                 />
           </div>
 
           {/* Action Buttons */}
           <div className="mt-2 flex gap-2">
-            {isReviewNeeded && onConfirm && (
+            {isAnalyzed && onConfirm && (
                 <Button 
                     variant="primary"
                     onClick={() => onConfirm(item.id)}
                     className="h-9 text-xs w-full bg-orange-500 hover:bg-orange-600 text-white animate-in zoom-in duration-200"
                 >
-                    <CheckCircle size={14} className="mr-2" /> Confirmar e Enviar
+                    <Upload size={14} className="mr-2" /> Enviar para Drive
                 </Button>
             )}
 
