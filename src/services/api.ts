@@ -16,7 +16,40 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * Extracts data from DACTE/CTE using Gemini Flash with Retry Logic
+ * Probes the AI Model to check if Quota is available using a minimal token request.
+ * Returns TRUE if available, FALSE if quota exceeded or error.
+ */
+export const checkAiAvailability = async (): Promise<boolean> => {
+  if (!GEMINI_API_KEY) return false;
+
+  try {
+    // Lightweight probe
+    await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: { text: "ping" },
+      config: { maxOutputTokens: 1 }
+    });
+    return true;
+  } catch (error: any) {
+    const errorStr = JSON.stringify(error);
+    const isQuotaError = 
+        errorStr.includes("429") || 
+        errorStr.includes("RESOURCE_EXHAUSTED") || 
+        errorStr.includes("quota") ||
+        error?.status === 429;
+    
+    if (isQuotaError) {
+        console.warn("[AI Check] Quota exceeded via probe.");
+        return false;
+    }
+    // If it's another error (network), we assume true to try the main request, 
+    // or false if we want to be conservative. Let's return true to let the main error handler catch connectivity issues.
+    return true; 
+  }
+};
+
+/**
+ * Extracts data from DACTE/CTE using Gemini Flash with Fail-Fast Logic for Quota
  */
 export const extractDataFromImage = async (base64Image: string): Promise<ExtractedData> => {
   if (!GEMINI_API_KEY) {
@@ -52,7 +85,7 @@ export const extractDataFromImage = async (base64Image: string): Promise<Extract
     Retorne JSON estrito.`;
 
   let attempt = 0;
-  const maxRetries = 4; // Increased retries for safety
+  const maxRetries = 3; 
 
   while (attempt < maxRetries) {
     try {
@@ -120,21 +153,23 @@ export const extractDataFromImage = async (base64Image: string): Promise<Extract
         error?.status === 503 ||
         error?.error?.code === 503;
 
-      if ((isQuotaError || isServerOverload) && attempt < maxRetries - 1) {
+      // FAIL FAST LOGIC FOR QUOTA: NO RETRIES
+      if (isQuotaError) {
+          console.warn(`[AI] Cota atingida. Falha imediata para liberar manual.`);
+          throw new Error("Cota de IA excedida. Preencha manualmente.");
+      }
+
+      // Standard Backoff for 503 (Server Overload)
+      if (isServerOverload && attempt < maxRetries - 1) {
         attempt++;
-        // Aggressive Backoff: 4s, 8s, 16s... gives the quota bucket time to refill
-        const waitTime = Math.pow(2, attempt) * 2000;
-        console.warn(`[AI] Erro de Cota/Servidor (${isQuotaError ? '429' : '503'}). Retentando em ${waitTime/1000}s... (Tentativa ${attempt}/${maxRetries})`);
+        const waitTime = Math.pow(2, attempt) * 1000;
+        console.warn(`[AI] Erro Servidor (503). Retentando em ${waitTime/1000}s...`);
         await delay(waitTime);
         continue;
       }
 
       console.error("Gemini Extraction Fatal Error:", error);
-      
-      if (isQuotaError) {
-        throw new Error("Sistema de IA sobrecarregado (Cota Excedida). Aguarde alguns segundos e tente novamente.");
-      }
-      throw new Error("Falha ao processar imagem com IA. Verifique a qualidade da imagem.");
+      throw new Error("Falha na leitura IA. Preencha manualmente.");
     }
   }
 

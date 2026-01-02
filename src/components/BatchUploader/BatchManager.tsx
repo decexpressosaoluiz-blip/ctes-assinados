@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { UploadCloud, Plus, Trash2, AlertTriangle, CheckCircle, Play, FileInput, StopCircle, Clock, Upload, ScanEye } from 'lucide-react';
 import { processImage } from '../../lib/imageProcessor';
-import { extractDataFromImage, uploadToDrive } from '../../services/api';
+import { extractDataFromImage, uploadToDrive, checkAiAvailability } from '../../services/api';
 import { BatchItem, ExtractedData } from '../../types';
 import { FileCard } from './FileCard';
 import { ImageZoomModal } from './ImageZoomModal';
@@ -9,7 +9,9 @@ import { Button } from '../ui/Button';
 import { convertPdfToJpeg } from '../../utils/pdfConverter';
 
 const MAX_BATCH_SIZE = 150; 
-const AI_DELAY_MS = 2000; // Delay to respect Free Tier limits (approx 30 req/min safety)
+// 3500ms = ~17 requests per minute (Safe margin for 15 RPM free tier)
+const AI_DELAY_MS = 3500; 
+const QUOTA_STORAGE_KEY = 'ai_quota_exceeded_date';
 
 export const BatchManager: React.FC = () => {
   const [items, setItems] = useState<BatchItem[]>([]);
@@ -18,9 +20,32 @@ export const BatchManager: React.FC = () => {
   const [statusMessage, setStatusMessage] = useState("");
   const [zoomState, setZoomState] = useState<{url: string, rotation: number} | null>(null);
   
+  // New State: Global Manual Mode
+  const [isManualMode, setIsManualMode] = useState(false);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<boolean>(false);
   const itemsRef = useRef<BatchItem[]>([]);
+  
+  // Persistent Flag: If Quota is hit, we skip AI for ALL subsequent items in the loop
+  const aiQuotaExceededRef = useRef(false);
+  const hasCheckedInitialRef = useRef(false);
+
+  // --- INITIALIZE: CHECK LOCALSTORAGE FOR TODAY'S QUOTA ---
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const lastQuotaDate = localStorage.getItem(QUOTA_STORAGE_KEY);
+    
+    if (lastQuotaDate === today) {
+        console.log("AI Quota already marked as exceeded for today. Switching to Manual Mode.");
+        aiQuotaExceededRef.current = true;
+        setIsManualMode(true);
+        hasCheckedInitialRef.current = true; // No need to probe
+    } else if (lastQuotaDate && lastQuotaDate !== today) {
+        // Clear old date
+        localStorage.removeItem(QUOTA_STORAGE_KEY);
+    }
+  }, []);
 
   // Sync Ref
   useEffect(() => {
@@ -94,7 +119,7 @@ export const BatchManager: React.FC = () => {
         id: crypto.randomUUID(),
         file,
         previewUrl: instantPreview, 
-        rotation: 270, // Default rotation
+        rotation: 270, // Default rotation (90 CCW)
         data: { numeroDoc: '', serie: '', dataEmissao: '' },
         status: 'queued'
       };
@@ -111,13 +136,35 @@ export const BatchManager: React.FC = () => {
     }, 500);
   };
 
+  const handleQuotaExceeded = () => {
+      aiQuotaExceededRef.current = true;
+      setIsManualMode(true);
+      const today = new Date().toISOString().split('T')[0];
+      localStorage.setItem(QUOTA_STORAGE_KEY, today);
+      setStatusMessage("Cota de IA atingida. Alternando para modo manual.");
+  };
+
   // --- CORE: ANALYSIS QUEUE (Image -> AI -> Ready) ---
   const startAnalysisQueue = async () => {
     if (isBusy) return;
     
     setIsAnalyzing(true);
     abortRef.current = false;
-    setStatusMessage("Iniciando análise...");
+    
+    // --- SMART PROBE: CHECK AVAILABILITY BEFORE FIRST BATCH ---
+    // Only check if we haven't checked yet AND aren't already in manual mode
+    if (!hasCheckedInitialRef.current && !aiQuotaExceededRef.current) {
+         setStatusMessage("Verificando disponibilidade da IA...");
+         const isAvailable = await checkAiAvailability();
+         hasCheckedInitialRef.current = true;
+         
+         if (!isAvailable) {
+             handleQuotaExceeded();
+             // We continue execution, but the loop below will respect the flag and skip AI
+         }
+    }
+
+    setStatusMessage(aiQuotaExceededRef.current ? "Iniciando modo manual..." : "Iniciando processamento...");
 
     // Get items that need processing (Queued or Error)
     const queueIds = itemsRef.current
@@ -141,8 +188,8 @@ export const BatchManager: React.FC = () => {
         }
 
         try {
-            // 1. Otimização de Imagem
-            setStatusMessage(`Item ${i + 1}/${total}: Otimizando imagem...`);
+            // 1. Otimização de Imagem & Rotação
+            setStatusMessage(`Item ${i + 1}/${total}: Tratando imagem...`);
             updateItemStatus(id, 'processing_image');
             
             let fileToProcess = currentItem.file;
@@ -152,12 +199,15 @@ export const BatchManager: React.FC = () => {
                 } catch (e) { throw new Error("Erro conv. PDF"); }
             }
 
-            const processed = await processImage(fileToProcess, currentItem.rotation || 0);
+            // FORCE ROTATION 270 (90 CCW) if not explicitly set to something else by user
+            const rotationToApply = currentItem.rotation ?? 270;
+
+            const processed = await processImage(fileToProcess, rotationToApply);
             
             // Revoke old blob to save memory
             if (currentItem.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(currentItem.previewUrl);
 
-            // Update State with Processed Image
+            // Update State with Processed Image (Baking the rotation)
             setItems(prev => prev.map(item => item.id === id ? {
                 ...item,
                 base64: processed.base64,
@@ -166,14 +216,24 @@ export const BatchManager: React.FC = () => {
             } : item));
 
             // --- PAUSE CHECK POINT ---
-            // Check if user paused THIS item while image was processing
             const freshItem = itemsRef.current.find(x => x.id === id);
             if (freshItem?.status === 'paused' || abortRef.current) {
-                 updateItemStatus(id, 'paused'); // Ensure it stays paused
+                 updateItemStatus(id, 'paused');
                  continue;
             }
 
-            // 2. AI Analysis
+            // 2. CHECK QUOTA FLAG
+            // If quota was already exceeded (either from Probe or previous error), SKIP AI
+            if (aiQuotaExceededRef.current) {
+                setItems(prev => prev.map(item => item.id === id ? {
+                    ...item,
+                    status: 'error',
+                    errorMessage: "Cota de IA excedida. Preencha manualmente.",
+                } : item));
+                continue; // Move to next item immediately
+            }
+
+            // 3. AI Analysis (If quota permits)
             const isManualDataFilled = currentItem.data.numeroDoc && currentItem.data.dataEmissao && currentItem.data.serie;
             let extractedData = currentItem.data;
 
@@ -181,13 +241,13 @@ export const BatchManager: React.FC = () => {
                 setStatusMessage(`Item ${i + 1}/${total}: Lendo com IA...`);
                 updateItemStatus(id, 'analyzing_ai');
 
-                // Artificial Delay for Rate Limiting
+                // Artificial Delay for Rate Limiting (only if not skipping)
                 if (i > 0) await new Promise(r => setTimeout(r, AI_DELAY_MS));
 
                 extractedData = await extractDataFromImage(processed.base64);
             }
 
-            // 3. Mark as READY (Orange) - DO NOT UPLOAD YET
+            // 4. Mark as READY (Orange)
             setItems(prev => prev.map(item => item.id === id ? {
                 ...item,
                 status: 'ready', // Orange State
@@ -196,18 +256,27 @@ export const BatchManager: React.FC = () => {
             } : item));
 
         } catch (err: any) {
-            console.error(`Error analyzing item ${id}:`, err);
+            const errorMsg = err.message || "Erro na análise";
+            console.error(`Error processing item ${id}:`, errorMsg);
+            
+            // Check if it's the Quota error happened DURING processing
+            if (errorMsg.includes("Cota")) {
+                handleQuotaExceeded();
+            }
+
             setItems(prev => prev.map(item => item.id === id ? {
                 ...item,
                 status: 'error',
-                errorMessage: err.message || "Erro na análise",
+                errorMessage: errorMsg,
             } : item));
-            await new Promise(r => setTimeout(r, 1000));
+            
+            // Minimal delay on error to not freeze UI, but proceed fast
+            await new Promise(r => setTimeout(r, 500));
         }
     }
 
     setIsAnalyzing(false);
-    setStatusMessage("Análise concluída. Verifique os dados.");
+    setStatusMessage("Processamento concluído.");
   };
 
   // --- CORE: UPLOAD QUEUE (Ready -> Cloud) ---
@@ -306,13 +375,9 @@ export const BatchManager: React.FC = () => {
   const handleTogglePause = (id: string) => {
      setItems(prev => prev.map(i => {
          if (i.id !== id) return i;
-         
-         // If currently processing, force it to 'paused' state immediately
-         // The loop checks for this state between steps
          if (i.status === 'processing_image' || i.status === 'analyzing_ai') {
              return { ...i, status: 'paused' };
          }
-         
          if (i.status === 'queued') return { ...i, status: 'paused' };
          if (i.status === 'paused') return { ...i, status: 'queued' };
          return i;
@@ -377,23 +442,45 @@ export const BatchManager: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full max-w-2xl mx-auto p-4 space-y-6 pb-24">
-      {/* Header & Stats */}
-      <div className="flex flex-col gap-2">
-         <div className="flex justify-between items-end">
-            <div>
-                <h1 className="text-2xl font-bold text-brand-primary dark:text-white">Upload em Massa</h1>
-                <p className="text-sm text-gray-500">
-                    Modo Seguro • Análise primeiro, Envio depois
-                </p>
+    <div className="flex flex-col max-w-2xl mx-auto p-4 space-y-4 pb-40">
+      {/* Header & Stats - REDESIGNED */}
+      <div className="flex flex-col gap-3">
+         <div>
+            <h1 className="text-2xl font-bold text-brand-primary dark:text-white">Digitalização</h1>
+         </div>
+
+         {/* Stats Bar - Horizontal Layout for better mobile fit */}
+         <div className="grid grid-cols-4 divide-x divide-gray-100 dark:divide-gray-700 bg-white dark:bg-brand-dark border border-gray-200 dark:border-gray-700 rounded-xl shadow-sm">
+            <div className="p-2 text-center">
+                <div className="text-[10px] text-gray-500 uppercase tracking-wider">Fila</div>
+                <div className="text-lg font-bold text-blue-600">{queuedCount}</div>
             </div>
-            <div className="text-right text-xs font-mono bg-gray-100 dark:bg-gray-800 p-2 rounded-lg grid grid-cols-2 gap-x-4 gap-y-1">
-                <div className="text-blue-600 font-bold">Fila: {queuedCount}</div>
-                <div className="text-orange-600 font-bold">Analisados: {readyCount}</div>
-                <div className="text-green-600">Sucesso: {successCount}</div>
-                <div className="text-red-500">Erros: {errorCount}</div>
+            <div className="p-2 text-center">
+                <div className="text-[10px] text-gray-500 uppercase tracking-wider">Análise</div>
+                <div className="text-lg font-bold text-orange-600">{readyCount}</div>
+            </div>
+            <div className="p-2 text-center">
+                <div className="text-[10px] text-gray-500 uppercase tracking-wider">Sucesso</div>
+                <div className="text-lg font-bold text-green-600">{successCount}</div>
+            </div>
+            <div className="p-2 text-center">
+                <div className="text-[10px] text-gray-500 uppercase tracking-wider">Erros</div>
+                <div className="text-lg font-bold text-red-500">{errorCount}</div>
             </div>
          </div>
+
+         {/* QUOTA WARNING BANNER */}
+         {isManualMode && (
+            <div className="bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700 p-3 rounded-lg flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
+                <AlertTriangle className="text-yellow-600 dark:text-yellow-500 shrink-0" />
+                <div>
+                    <h4 className="text-sm font-bold text-yellow-800 dark:text-yellow-200">Modo Manual Ativo</h4>
+                    <p className="text-xs text-yellow-700 dark:text-yellow-300">
+                        Cota da IA esgotada para hoje. As imagens serão tratadas, mas os dados devem ser inseridos manualmente.
+                    </p>
+                </div>
+            </div>
+         )}
 
          {/* Status Banner */}
          {isBusy && (

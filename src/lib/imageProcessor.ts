@@ -17,53 +17,54 @@ export const processImage = async (file: File, rotation: number = 0): Promise<Pr
           return;
         }
 
-        // 1. Resize Logic
+        // 1. Resize Logic (Robust)
         const MAX_WIDTH = 1280; 
         let width = img.width;
         let height = img.height;
 
-        // Calculate dimensions based on rotation
-        // If rotating 90 or 270, we swap width/height logic for the canvas container
-        const isRotatedSideways = rotation === 90 || rotation === 270;
-        
-        // Resize logic applies to the *visual* orientation
-        let srcWidth = width;
-        let srcHeight = height;
-
-        // We scale down the source if it's too big
-        if (width > MAX_WIDTH || height > MAX_WIDTH) { // Simple check, refine if needed
+        // Ensure we check BOTH dimensions to prevent massive canvases
+        if (width > MAX_WIDTH || height > MAX_WIDTH) {
             const ratio = Math.min(MAX_WIDTH / width, MAX_WIDTH / height);
-            // We don't strictly enforce 1280px here for all cases, but let's keep it safe
-             if (width > MAX_WIDTH) {
-                height = Math.round((height * MAX_WIDTH) / width);
-                width = MAX_WIDTH;
-             }
+            width = Math.floor(width * ratio);
+            height = Math.floor(height * ratio);
         }
-        
-        // Set canvas dimensions. 
-        // If rotated 90/270, the canvas width is the image's height
-        canvas.width = isRotatedSideways ? height : width;
-        canvas.height = isRotatedSideways ? width : height;
 
-        // 2. Draw & Rotate
+        // 2. Setup Canvas based on Rotation
+        // Normalize rotation to 0-360 positive
+        const normRot = (rotation % 360 + 360) % 360;
+        const isSideways = normRot === 90 || normRot === 270;
+
+        // Determine canvas dimensions
+        // If sideways, width becomes height and height becomes width
+        if (isSideways) {
+            canvas.width = height;
+            canvas.height = width;
+        } else {
+            canvas.width = width;
+            canvas.height = height;
+        }
+
         ctx.fillStyle = 'white';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
+
+        // 3. Center Rotation Logic (Proven & Robust)
         ctx.save();
         
-        // Translate to center of canvas to rotate around center
+        // Translate to the CENTER of the canvas
         ctx.translate(canvas.width / 2, canvas.height / 2);
-        ctx.rotate((rotation * Math.PI) / 180);
         
-        // Draw image centered (subtracting half dimensions)
-        // Note: We draw based on the *original* (scaled) width/height, 
-        // because the context is rotated.
+        // Rotate
+        ctx.rotate((normRot * Math.PI) / 180);
+        
+        // Draw Image CENTERED
+        // Note: We always draw using the SCALED original dimensions (width, height)
+        // centered around (0,0) of the rotated context.
         ctx.drawImage(img, -width / 2, -height / 2, width, height);
         
         ctx.restore();
 
-        // 3. Fast Compression (Single Pass)
-        const quality = 0.65;
+        // 4. Fast Compression
+        const quality = 0.70; 
         const dataUrl = canvas.toDataURL('image/jpeg', quality);
         
         const base64 = dataUrl.split(',')[1];
