@@ -340,7 +340,8 @@ export const BatchManager: React.FC = () => {
                 imagemBase64: item.base64 || '' 
          });
          setItems(prev => prev.map(i => i.id === id ? {
-             ...i, status: 'success', base64: undefined, errorMessage: undefined
+             ...i, status: 'success', base64: undefined, errorMessage: undefined,
+             data: { ...i.data, needsReview: false } // Clear flag on success
          } : i));
      } catch (err: any) {
          setItems(prev => prev.map(i => i.id === id ? {

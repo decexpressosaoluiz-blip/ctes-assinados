@@ -294,10 +294,28 @@ export const FileCard: React.FC<FileCardProps> = ({ item, onRemove, onUpdateData
                 </Button>
             )}
 
+            {/* Manual Upload for Queued Items */}
+            {isQueued && !isDataIncomplete && onConfirm && (
+                 <Button 
+                    variant="primary"
+                    onClick={() => onConfirm(item.id)}
+                    className="h-9 text-xs w-full bg-brand-primary text-white animate-in zoom-in duration-200"
+                >
+                    <Upload size={14} className="mr-2" /> Enviar Manualmente
+                </Button>
+            )}
+
             {isError && (
                 <Button 
                     variant={showRetryAsUpload ? "primary" : "outline"}
-                    onClick={() => onRetry(item.id)} 
+                    onClick={() => {
+                        // Direct upload if manual data present, otherwise retry AI
+                        if (showRetryAsUpload && onConfirm) {
+                            onConfirm(item.id);
+                        } else {
+                            onRetry(item.id);
+                        }
+                    }} 
                     className={`h-9 text-xs w-full ${showRetryAsUpload ? 'bg-brand-primary text-white' : 'border-red-300 text-red-700 hover:bg-red-100 bg-white/50'}`}
                 >
                     {showRetryAsUpload ? (
